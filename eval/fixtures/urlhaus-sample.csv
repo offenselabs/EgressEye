@@ -1,0 +1,19 @@
+# URLhaus (abuse.ch) csv_recent-format fixture for offline eval/tests.
+# Synthetic hosts — never contacted; format matches
+# id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter
+# 101,2026-09-14 03:12:44,http://stage-logs-collect-9f3.top/gate.php,online,None,malware,"elf,logcollector",https://urlhaus.abuse.ch/browse/101/,researcher
+# 102,2026-09-18 11:02:10,http://185.220.101.4:8080/payload.bin,online,None,malware,"exe,c2",https://urlhaus.abuse.ch/browse/102/,researcher
+# 103,2026-09-21 07:44:31,http://cdn-update-check.tk/agent.msi,online,None,malware,"msi,loader",https://urlhaus.abuse.ch/browse/103/,researcher
+# 104,2026-10-02 19:23:58,http://paste-drop-4n6.xyz/upload,online,None,malware,"exfil,upload",https://urlhaus.abuse.ch/browse/104/,researcher
+# 105,2026-10-11 05:31:07,http://npm-registry-mirror.xyz/react.tar.gz,offline,2026-10-20 09:00:00,malware,"typosquat,registry",https://urlhaus.abuse.ch/browse/105/,researcher
+# 106,2026-10-15 22:10:45,http://logstash-collector-8hx.xyz/ingest,online,None,malware,"exfil,logs",https://urlhaus.abuse.ch/browse/106/,researcher
+# 107,2026-10-19 14:55:12,http://evil-payload-download.top/ps1,online,None,malware,"ps1,dropper",https://urlhaus.abuse.ch/browse/107/,researcher
+# 108,2026-10-22 08:19:03,http://license-check-top.xyz/api/v1/beacon,online,None,malware,"beacon,win",https://urlhaus.abuse.ch/browse/108/,researcher
+101,2026-09-14 03:12:44,http://stage-logs-collect-9f3.top/gate.php,online,None,malware,"elf,logcollector",https://urlhaus.abuse.ch/browse/101/,researcher
+102,2026-09-18 11:02:10,http://185.220.101.4:8080/payload.bin,online,None,malware,"exe,c2",https://urlhaus.abuse.ch/browse/102/,researcher
+103,2026-09-21 07:44:31,http://cdn-update-check.tk/agent.msi,online,None,malware,"msi,loader",https://urlhaus.abuse.ch/browse/103/,researcher
+104,2026-10-02 19:23:58,http://paste-drop-4n6.xyz/upload,online,None,malware,"exfil,upload",https://urlhaus.abuse.ch/browse/104/,researcher
+105,2026-10-11 05:31:07,http://npm-registry-mirror.xyz/react.tar.gz,offline,2026-10-20 09:00:00,malware,"typosquat,registry",https://urlhaus.abuse.ch/browse/105/,researcher
+106,2026-10-15 22:10:45,http://logstash-collector-8hx.xyz/ingest,online,None,malware,"exfil,logs",https://urlhaus.abuse.ch/browse/106/,researcher
+107,2026-10-19 14:55:12,http://evil-payload-download.top/ps1,online,None,malware,"ps1,dropper",https://urlhaus.abuse.ch/browse/107/,researcher
+108,2026-10-22 08:19:03,http://license-check-top.xyz/api/v1/beacon,online,None,malware,"beacon,win",https://urlhaus.abuse.ch/browse/108/,researcher

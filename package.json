@@ -1,0 +1,34 @@
+{
+  "name": "egress-eye",
+  "version": "0.1.0",
+  "description": "Per-session egress visibility for AI coding agents: every external URL and secret an agent tries to send, with verdicts, reasons, and sources.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "egress-eye": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/",
+    "eval": "npm run build && node dist/eval/run.js",
+    "doctor": "npm run build && node dist/cli.js doctor",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "ai-agents",
+    "security",
+    "egress",
+    "url-reputation",
+    "prompt-injection",
+    "zcode",
+    "claude-code",
+    "opencode"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
