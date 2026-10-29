@@ -15,12 +15,12 @@ import { dataDir, sanitizeSessionId } from "./lib/paths.js";
 /**
  * EgressEye CLI — zero runtime dependencies (Node builtins only).
  *
- *   egress-eye hook <event> [sessionId]   hook entrypoint (also dist/hooks/zcode.js)
+ *   egress-eye hook <event> [sessionId]   hook entrypoint (also dist/hooks/*.js)
  *   egress-eye report [options]           per-session egress report
  *   egress-eye sessions                   list recorded sessions
  *   egress-eye scan <text…>               one-shot check of a string (no logging)
- *   egress-eye update-feeds               force-refresh the URLhaus mirror
- *   egress-eye init zcode [options]       wire hooks into ZCode config
+ *   egress-eye update-feeds               refresh the mirror feed
+ *   egress-eye init <adapter> [options]   install/remove hooks for a harness
  *   egress-eye doctor                     validate the installation
  */
 
@@ -31,11 +31,17 @@ Usage:
   egress-eye report [--session <id>] [--last] [--json] [--markdown] [--all] [--max-rows N]
   egress-eye sessions                     list recorded sessions
   egress-eye scan <text…>                 check a string right now (nothing is logged)
-  egress-eye update-feeds                 refresh the URLhaus CSV mirror
-  egress-eye init zcode [--project] [--uninstall]
-                                          install/remove hooks in ZCode config
+  egress-eye update-feeds                 refresh the mirror feed (OpenPhish by default)
+  egress-eye init <adapter> [--project] [--uninstall]
   egress-eye doctor                       validate the installation
   egress-eye help                         this help
+
+Adapters:
+  zcode         config hooks in ~/.zcode/cli/config.json (or .zcode/config.json with --project)
+  claude-code   hooks in ~/.claude/settings.json (or .claude/settings.json with --project)
+  codex         managed TOML block in ~/.codex/config.toml (or .codex/config.toml)
+  hermes        Python plugin in ~/.hermes/plugins/egress-eye/ (plugin.yaml + __init__.py)
+  opencode      plugin in ~/.config/opencode/plugins/ (or .opencode/plugins/)
 
 Environment:
   EGRESS_EYE_HOME              data directory (default ~/.egress-eye)
@@ -153,7 +159,27 @@ async function cmdUpdateFeeds(): Promise<void> {
 
 /* ---------------------------------- init ---------------------------------- */
 
-interface HookEntry {
+const ADAPTERS = ["zcode", "claude-code", "codex", "hermes", "opencode"] as const;
+
+function scriptPath(name: string): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "hooks", name);
+}
+
+function toPosix(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+function backupAndWrite(cfgPath: string, content: string): void {
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  if (fs.existsSync(cfgPath)) {
+    fs.copyFileSync(cfgPath, `${cfgPath}.egress-eye.bak`);
+  }
+  fs.writeFileSync(cfgPath, content, "utf8");
+}
+
+/* ---------- zcode: JSON hooks in ~/.zcode/cli/config.json ---------- */
+
+interface ZcodeHookEntry {
   type: string;
   command: string;
   args?: string[];
@@ -161,7 +187,7 @@ interface HookEntry {
   statusMessage?: string;
 }
 
-function isOurEntry(entry: unknown): boolean {
+function isOurZcodeEntry(entry: unknown): boolean {
   if (typeof entry !== "object" || entry === null) return false;
   const hooks = (entry as { hooks?: unknown }).hooks;
   if (!Array.isArray(hooks)) return false;
@@ -173,34 +199,31 @@ function isOurEntry(entry: unknown): boolean {
   });
 }
 
-function hookEntry(event: string): { matcher?: string; hooks: HookEntry[] } {
-  const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "hooks", "zcode.js");
-  // ZCode event names are PascalCase (PreToolUse); the hook entrypoint takes
-  // kebab-case (pre-tool-use).
-  const internal = event.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
-  const base: HookEntry = {
+function zcodeHookEntry(event: string): { matcher?: string; hooks: ZcodeHookEntry[] } {
+  const internal = kebabEvent(event);
+  const base: ZcodeHookEntry = {
     type: "process",
     command: "node",
-    args: [script, internal, "${CLAUDE_SESSION_ID}"],
+    args: [scriptPath("zcode.js"), internal, "${CLAUDE_SESSION_ID}"],
     timeoutMs: 15000,
     statusMessage: `egress-eye: ${event}`,
   };
   return { hooks: [base] };
 }
 
-const EVENTS_WE_WIRE = ["SessionStart", "PreToolUse", "PostToolUseFailure", "Stop"] as const;
+/** ZCode event names are PascalCase; the hook entrypoint takes kebab-case. */
+function kebabEvent(event: string): string {
+  return event.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+}
 
-function configPath(project: boolean): string {
+const ZCODE_EVENTS = ["SessionStart", "PreToolUse", "PostToolUseFailure", "Stop"] as const;
+
+function zcodeConfigPath(project: boolean): string {
   return project ? path.join(process.cwd(), ".zcode", "config.json") : path.join(os.homedir(), ".zcode", "cli", "config.json");
 }
 
-async function cmdInit(args: string[]): Promise<void> {
-  const flags = parseFlags(args);
-  const target = args[0] ?? "zcode";
-  if (target !== "zcode") cliError(`unknown adapter '${target}' — available: zcode (opencode and claude-code are planned)`);
-  const project = Boolean(flags.project);
-  const cfgPath = configPath(project);
-
+function initZcode(flags: Record<string, string | boolean>, project: boolean): void {
+  const cfgPath = zcodeConfigPath(project);
   let cfg: Record<string, unknown> = {};
   if (fs.existsSync(cfgPath)) {
     try {
@@ -209,51 +232,375 @@ async function cmdInit(args: string[]): Promise<void> {
       cliError(`cannot parse ${cfgPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  const hooks = (cfg.hooks ?? {}) as { enabled?: boolean; events?: Record<string, unknown[]> };
 
   if (flags.uninstall) {
-    const hooks = (cfg.hooks ?? {}) as { events?: Record<string, unknown[]> };
     const events = hooks.events ?? {};
     for (const event of Object.keys(events)) {
       const list = Array.isArray(events[event]) ? (events[event] as unknown[]) : [];
-      const kept = list.filter((e) => !isOurEntry(e));
+      const kept = list.filter((e) => !isOurZcodeEntry(e));
       if (kept.length === 0) delete events[event];
       else events[event] = kept;
     }
     if (Object.keys(events).length === 0) delete (hooks as { events?: unknown }).events;
     cfg.hooks = hooks;
-    writeConfig(cfgPath, cfg, false);
+    backupAndWrite(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
     process.stdout.write(`Removed egress-eye hooks from ${cfgPath}\n`);
     return;
   }
 
-  if (fs.existsSync(cfgPath)) {
-    fs.copyFileSync(cfgPath, `${cfgPath}.egress-eye.bak`);
-  }
-  const hooks = (cfg.hooks ?? {}) as { enabled?: boolean; events?: Record<string, unknown[]>; timeoutMs?: number; maxOutputBytes?: number };
   hooks.enabled = true;
   const events = hooks.events ?? {};
-  for (const event of EVENTS_WE_WIRE) {
+  for (const event of ZCODE_EVENTS) {
     const list = Array.isArray(events[event]) ? (events[event] as unknown[]) : [];
-    events[event] = [...list.filter((e) => !isOurEntry(e)), hookEntry(event)];
+    events[event] = [...list.filter((e) => !isOurZcodeEntry(e)), zcodeHookEntry(event)];
   }
   hooks.events = events;
   cfg.hooks = hooks;
-  writeConfig(cfgPath, cfg, true);
-
+  backupAndWrite(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
   process.stdout.write(`Installed egress-eye hooks into ${cfgPath}\n`);
-  process.stdout.write("  SessionStart, PreToolUse (all tools), PostToolUseFailure, Stop\n");
-  process.stdout.write("A backup of the previous config is at " + `${cfgPath}.egress-eye.bak` + "\n");
-  process.stdout.write("\nNext steps:\n");
-  process.stdout.write("  1. Start a new ZCode session (hooks load per session).\n");
-  process.stdout.write("  2. Run `egress-eye update-feeds` once to mirror the URLhaus feed.\n");
-  process.stdout.write("  3. After some agent activity: `egress-eye report` (or --last).\n");
-  process.stdout.write(`  Report-only by default. Set EGRESS_EYE_BLOCK=1 to deny malicious calls.\n`);
+  printNextSteps("ZCode");
 }
 
-function writeConfig(cfgPath: string, cfg: Record<string, unknown>, installed: boolean): void {
-  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-  if (!installed) return;
+/* ---------- claude code: JSON hooks in ~/.claude/settings.json ---------- */
+
+const CLAUDE_EVENTS: Array<{ key: string; event: string }> = [
+  { key: "SessionStart", event: "session-start" },
+  { key: "PreToolUse", event: "pre-tool-use" },
+  { key: "Stop", event: "stop" },
+  { key: "SessionEnd", event: "session-end" },
+];
+
+function claudeSettingsPath(project: boolean): string {
+  return project ? path.join(process.cwd(), ".claude", "settings.json") : path.join(os.homedir(), ".claude", "settings.json");
+}
+
+function isOurClaudeEntry(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const hooks = (entry as { hooks?: unknown }).hooks;
+  if (!Array.isArray(hooks)) return false;
+  return hooks.some((h) => {
+    const command = (h as { command?: unknown })?.command;
+    return typeof command === "string" && command.includes("claude-code.js");
+  });
+}
+
+function initClaudeCode(flags: Record<string, string | boolean>, project: boolean): void {
+  const cfgPath = claudeSettingsPath(project);
+  let cfg: Record<string, unknown> = {};
+  if (fs.existsSync(cfgPath)) {
+    try {
+      cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+    } catch (err) {
+      cliError(`cannot parse ${cfgPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const hooksBlock = (cfg.hooks ?? {}) as Record<string, unknown[]>;
+
+  if (flags.uninstall) {
+    for (const { key } of CLAUDE_EVENTS) {
+      const list = Array.isArray(hooksBlock[key]) ? hooksBlock[key]! : [];
+      const kept = list.filter((e) => !isOurClaudeEntry(e));
+      if (kept.length === 0) delete hooksBlock[key];
+      else hooksBlock[key] = kept;
+    }
+    cfg.hooks = hooksBlock;
+    backupAndWrite(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+    process.stdout.write(`Removed egress-eye hooks from ${cfgPath}\n`);
+    return;
+  }
+
+  const command = (event: string) => `node "${toPosix(scriptPath("claude-code.js"))}" ${event}`;
+  for (const { key, event } of CLAUDE_EVENTS) {
+    const list = Array.isArray(hooksBlock[key]) ? hooksBlock[key]! : [];
+    hooksBlock[key] = [
+      ...list.filter((e) => !isOurClaudeEntry(e)),
+      { hooks: [{ type: "command", command: command(event), timeout: 30 }] },
+    ];
+  }
+  cfg.hooks = hooksBlock;
+  backupAndWrite(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+  process.stdout.write(`Installed egress-eye hooks into ${cfgPath}\n`);
+  process.stdout.write("  SessionStart, PreToolUse (all tools), Stop, SessionEnd\n");
+  printNextSteps("Claude Code");
+}
+
+/* ---------- codex: managed TOML block in ~/.codex/config.toml ---------- */
+
+export const CODEX_BLOCK_START = "# >>> egress-eye managed hooks block >>>";
+export const CODEX_BLOCK_END = "# <<< egress-eye managed hooks block <<<";
+
+export function codexHookBlock(nodePath: string, hookScript: string): string {
+  const node = toPosix(nodePath);
+  const script = toPosix(hookScript);
+  const command = (event: string) => `command = '${node} "${script}" ${event}'`;
+  const entry = (eventName: string, event: string) =>
+    [`[[hooks.${eventName}]]`, "", `[[hooks.${eventName}.hooks]]`, 'type = "command"', command(event), "timeout = 30", ""];
+  return [
+    CODEX_BLOCK_START,
+    "# Installed by `egress-eye init codex` — remove with `egress-eye init codex --uninstall`.",
+    ...entry("SessionStart", "session-start"),
+    ...entry("PreToolUse", "pre-tool-use"),
+    ...entry("Stop", "stop"),
+    CODEX_BLOCK_END,
+    "",
+  ].join("\n");
+}
+
+export function stripCodexBlock(content: string): string {
+  const start = content.indexOf(CODEX_BLOCK_START);
+  if (start === -1) return content;
+  const end = content.indexOf(CODEX_BLOCK_END, start);
+  if (end === -1) return content;
+  const removed = content.slice(0, start) + content.slice(end + CODEX_BLOCK_END.length);
+  return removed.replace(/\n{3,}/g, "\n\n").replace(/\n*$/, "\n");
+}
+
+function codexConfigPath(project: boolean): string {
+  return project ? path.join(process.cwd(), ".codex", "config.toml") : path.join(os.homedir(), ".codex", "config.toml");
+}
+
+function initCodex(flags: Record<string, string | boolean>, project: boolean): void {
+  const cfgPath = codexConfigPath(project);
+  const existing = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, "utf8") : "";
+
+  if (flags.uninstall) {
+    if (!existing.includes(CODEX_BLOCK_START)) {
+      process.stdout.write(`No egress-eye block found in ${cfgPath}\n`);
+      return;
+    }
+    backupAndWrite(cfgPath, stripCodexBlock(existing));
+    process.stdout.write(`Removed egress-eye hooks from ${cfgPath}\n`);
+    return;
+  }
+
+  backupAndWrite(cfgPath, stripCodexBlock(existing).replace(/\n*$/, "\n\n") + codexHookBlock(process.execPath, scriptPath("codex.js")));
+  process.stdout.write(`Installed egress-eye hooks into ${cfgPath}\n`);
+  process.stdout.write("  SessionStart, PreToolUse (all tools), Stop\n");
+  process.stdout.write("  Note: Codex may ask you to trust hooks on first run.\n");
+  process.stdout.write("  Known upstream gaps: some tool handlers never emit PreToolUse, and on\n");
+  process.stdout.write("  Windows `command_execution` does not emit it yet (openai/codex #20204, #24453).\n");
+  printNextSteps("Codex");
+}
+
+/* ---------- hermes: Python plugin in ~/.hermes/plugins/egress-eye/ ---------- */
+
+export function hermesPluginDir(): string {
+  return process.env.EGRESS_EYE_HERMES_DIR ?? path.join(os.homedir(), ".hermes", "plugins", "egress-eye");
+}
+
+export function hermesPluginYaml(): string {
+  return `name: egress-eye
+version: 0.1.0
+description: >
+  Per-session egress visibility for Hermes: logs and flags outbound URLs and
+  secret material in tool calls, with verdicts, reasons, and sources.
+  Report-first by default; blocking opt-in via EGRESS_EYE_BLOCK=1.
+provides_hooks:
+  - pre_tool_call
+  - on_session_start
+  - on_session_end
+`;
+}
+
+export function hermesInitPy(nodePath: string, hookScript: string): string {
+  const node = toPosix(nodePath);
+  const script = toPosix(hookScript);
+  return `"""EgressEye engine wrapper for Hermes (generated by \`egress-eye init hermes\`).
+
+The detection engine runs in Node; this wrapper only passes tool-call payloads
+to it and relays a block decision when EGRESS_EYE_BLOCK=1. A failure here must
+never break the Hermes session.
+"""
+
+import json
+import subprocess
+
+_NODE = "${node}"
+_SCRIPT = "${script}"
+_TIMEOUT_S = 30
+
+
+def _run(event, payload):
+    """Run the Node engine for one event; return parsed stdout JSON or None."""
+    try:
+        proc = subprocess.run(
+            [_NODE, _SCRIPT, event],
+            input=json.dumps(payload).encode("utf-8"),
+            capture_output=True,
+            timeout=_TIMEOUT_S,
+        )
+    except Exception:
+        return None
+    out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+    if not out:
+        return None
+    try:
+        decision = json.loads(out)
+    except ValueError:
+        return None
+    return decision if isinstance(decision, dict) else None
+
+
+def _pre_tool_call(tool_name=None, args=None, task_id=None, **kwargs):
+    return _run("pre-tool-use", {"tool_name": tool_name, "args": args, "task_id": task_id})
+
+
+def _on_session_start(**kwargs):
+    _run("session-start", {"session_id": kwargs.get("session_id") or kwargs.get("task_id")})
+    return None
+
+
+def _on_session_end(**kwargs):
+    _run("session-end", {"session_id": kwargs.get("session_id") or kwargs.get("task_id")})
+    return None
+
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", _pre_tool_call)
+    ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("on_session_end", _on_session_end)
+`;
+}
+
+function initHermes(flags: Record<string, string | boolean>): void {
+  const dir = hermesPluginDir();
+  if (flags.uninstall) {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      process.stdout.write(`Removed ${dir}\n`);
+    } else {
+      process.stdout.write("Hermes plugin not installed.\n");
+    }
+    return;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "plugin.yaml"), hermesPluginYaml(), "utf8");
+  fs.writeFileSync(path.join(dir, "__init__.py"), hermesInitPy(process.execPath, scriptPath("hermes.js")), "utf8");
+  process.stdout.write(`Installed Hermes plugin at ${dir}\n`);
+  process.stdout.write("  pre_tool_call (observe / block in block mode), on_session_start, on_session_end\n");
+  printNextSteps("Hermes");
+}
+
+/* ---------- opencode: JS plugin in ~/.config/opencode/plugins/ ---------- */
+
+export function opencodePluginDir(project: boolean): string {
+  if (process.env.EGRESS_EYE_OPENCODE_DIR) return process.env.EGRESS_EYE_OPENCODE_DIR;
+  return project ? path.join(process.cwd(), ".opencode", "plugins") : path.join(os.homedir(), ".config", "opencode", "plugins");
+}
+
+export function opencodePluginSource(nodePath: string, hookScript: string): string {
+  const node = toPosix(nodePath);
+  const script = toPosix(hookScript);
+  return `// EgressEye for OpenCode (generated by \`egress-eye init opencode\`).
+// Inspects every tool call before execution. Blocks malicious calls only when
+// EGRESS_EYE_BLOCK=1; any engine failure is swallowed so the session is never broken.
+import { spawn } from "node:child_process";
+
+const NODE = ${JSON.stringify(node)};
+const SCRIPT = ${JSON.stringify(script)};
+
+function inspect(tool, args, sessionID) {
+  return new Promise((resolve) => {
+    let err = "";
+    const child = spawn(NODE, [SCRIPT, "pre-tool-use", sessionID || ""], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stderr.on("data", (c) => {
+      err += c;
+    });
+    child.on("error", () => resolve({ code: 0, err }));
+    child.on("close", (code) => resolve({ code: code ?? 0, err }));
+    child.stdin.end(JSON.stringify({ tool_name: tool, tool_input: args, session_id: sessionID }));
+  });
+}
+
+function runEvent(event) {
+  return new Promise((resolve) => {
+    const child = spawn(NODE, [SCRIPT, event], { stdio: ["pipe", "pipe", "pipe"] });
+    child.on("error", () => resolve());
+    child.on("close", () => resolve());
+    child.stdin.end("");
+  });
+}
+
+export const EgressEyePlugin = async () => ({
+  "tool.execute.before": async (input, output) => {
+    try {
+      const result = await inspect(input.tool, output.args, input.sessionID);
+      if (result.code === 2) {
+        throw new Error(result.err || "[egress-eye] blocked a call judged malicious by the egress feed");
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("[egress-eye]")) throw e;
+      // engine failure: observe only
+    }
+  },
+  "session.created": async () => {
+    try {
+      await runEvent("session-start");
+    } catch {
+      // never break the session
+    }
+  },
+  "session.idle": async () => {
+    try {
+      await runEvent("stop");
+    } catch {
+      // never break the session
+    }
+  },
+});
+`;
+}
+
+function initOpencode(flags: Record<string, string | boolean>, project: boolean): void {
+  const dir = opencodePluginDir(project);
+  const pluginFile = path.join(dir, "egress-eye.js");
+  if (flags.uninstall) {
+    if (fs.existsSync(pluginFile)) {
+      fs.rmSync(pluginFile, { force: true });
+      process.stdout.write(`Removed ${pluginFile}\n`);
+    } else {
+      process.stdout.write("OpenCode plugin not installed.\n");
+    }
+    return;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(pluginFile, opencodePluginSource(process.execPath, scriptPath("zcode.js")), "utf8");
+  process.stdout.write(`Installed OpenCode plugin at ${pluginFile}\n`);
+  process.stdout.write("  tool.execute.before (all tools; blocks in block mode by throwing)\n");
+  printNextSteps("OpenCode");
+}
+
+/* ---------- dispatcher ---------- */
+
+function printNextSteps(harness: string): void {
+  process.stdout.write("\nNext steps:\n");
+  process.stdout.write(`  1. Start a new ${harness} session (hooks load per session).\n`);
+  process.stdout.write("  2. Run `egress-eye update-feeds` once to mirror the feed.\n");
+  process.stdout.write("  3. After some agent activity: `egress-eye report` (or --last).\n");
+  process.stdout.write("  Report-only by default. Set EGRESS_EYE_BLOCK=1 to deny malicious calls.\n");
+}
+
+async function cmdInit(args: string[]): Promise<void> {
+  const target = args[0];
+  const flags = parseFlags(args.slice(1));
+  const project = Boolean(flags.project);
+  switch (target) {
+    case "zcode":
+      return initZcode(flags, project);
+    case "claude-code":
+      return initClaudeCode(flags, project);
+    case "codex":
+      return initCodex(flags, project);
+    case "hermes":
+      return initHermes(flags);
+    case "opencode":
+      return initOpencode(flags, project);
+    default:
+      cliError(`unknown adapter '${target ?? ""}' — available: ${ADAPTERS.join(", ")}`);
+  }
 }
 
 /* --------------------------------- doctor --------------------------------- */
@@ -307,23 +654,58 @@ async function cmdDoctor(): Promise<void> {
   if (process.env.EGRESS_EYE_RDAP === "0") warn("RDAP newly-registered-domain check: disabled (EGRESS_EYE_RDAP=0)");
   else ok("RDAP newly-registered-domain check: enabled (max 3 fresh lookups per hook run)");
 
-  process.stdout.write("\n[hooks]\n");
-  for (const [label, cfgPath] of [["user", configPath(false)], ["project", configPath(true)]] as const) {
+  process.stdout.write("\n[adapters]\n");
+  let installed = 0;
+
+  for (const [label, cfgPath] of [["user", zcodeConfigPath(false)], ["project", zcodeConfigPath(true)]] as const) {
     if (!fs.existsSync(cfgPath)) continue;
     try {
       const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as { hooks?: { enabled?: boolean; events?: Record<string, unknown[]> } };
       const events = cfg.hooks?.events ?? {};
-      const wired = EVENTS_WE_WIRE.filter((e) => Array.isArray(events[e]) && (events[e] as unknown[]).some(isOurEntry));
+      const wired = ZCODE_EVENTS.filter((e) => Array.isArray(events[e]) && (events[e] as unknown[]).some(isOurZcodeEntry));
       if (wired.length > 0) {
-        if (cfg.hooks?.enabled) ok(`${label} config (${cfgPath}): ${wired.join(", ")} wired, enabled`);
-        else bad(`${label} config (${cfgPath}): hooks present but hooks.enabled is not true — they will not run`);
+        installed++;
+        if (cfg.hooks?.enabled) ok(`zcode ${label} config (${cfgPath}): ${wired.join(", ")} wired, enabled`);
+        else bad(`zcode ${label} config (${cfgPath}): hooks present but hooks.enabled is not true — they will not run`);
       }
     } catch {
-      warn(`${label} config (${cfgPath}) is not valid JSON`);
+      warn(`zcode ${label} config (${cfgPath}) is not valid JSON`);
     }
   }
-  if (!fs.existsSync(configPath(false)) && !fs.existsSync(configPath(true))) {
-    warn("no hooks installed — run `egress-eye init zcode` (or use the plugin manifest in adapters/zcode/)");
+
+  const claudePath = claudeSettingsPath(false);
+  if (fs.existsSync(claudePath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(claudePath, "utf8")) as { hooks?: Record<string, unknown[]> };
+      const wired = CLAUDE_EVENTS.filter(({ key }) => Array.isArray(cfg.hooks?.[key]) && (cfg.hooks![key] as unknown[]).some(isOurClaudeEntry));
+      if (wired.length > 0) {
+        installed++;
+        ok(`claude-code (${claudePath}): ${wired.map((w) => w.key).join(", ")} wired`);
+      }
+    } catch {
+      warn(`claude-code config (${claudePath}) is not valid JSON`);
+    }
+  }
+
+  const codexPath = codexConfigPath(false);
+  if (fs.existsSync(codexPath) && fs.readFileSync(codexPath, "utf8").includes(CODEX_BLOCK_START)) {
+    installed++;
+    ok(`codex (${codexPath}): managed block present`);
+  }
+
+  if (fs.existsSync(path.join(hermesPluginDir(), "plugin.yaml"))) {
+    installed++;
+    ok(`hermes (${hermesPluginDir()}): plugin installed`);
+  }
+
+  const opencodeFile = path.join(opencodePluginDir(false), "egress-eye.js");
+  if (fs.existsSync(opencodeFile)) {
+    installed++;
+    ok(`opencode (${opencodeFile}): plugin installed`);
+  }
+
+  if (installed === 0) {
+    warn(`no adapters installed — run \`egress-eye init <adapter>\` (${ADAPTERS.join(", ")})`);
   }
 
   process.stdout.write("\n[hook smoke test]\n");
@@ -336,7 +718,7 @@ async function cmdDoctor(): Promise<void> {
 }
 
 function smokeTestHook(): Promise<boolean> {
-  const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "hooks", "zcode.js");
+  const script = scriptPath("zcode.js");
   return new Promise((resolve) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "egress-eye-doctor-"));
     const child = spawn(process.execPath, [script, "pre-tool-use"], {
@@ -360,6 +742,18 @@ function smokeTestHook(): Promise<boolean> {
 }
 
 /* ---------------------------------- main ---------------------------------- */
+
+function readStdinCli(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c: string) => (data += c));
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(""));
+    // If stdin is a TTY (interactive), don't wait forever.
+    if (process.stdin.isTTY) resolve("");
+  });
+}
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -399,18 +793,6 @@ async function main(): Promise<void> {
     default:
       cliError(`unknown command '${cmd}' — try 'egress-eye help'`);
   }
-}
-
-function readStdinCli(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (c: string) => (data += c));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(""));
-    // If stdin is a TTY (interactive), don't wait forever.
-    if (process.stdin.isTTY) resolve("");
-  });
 }
 
 main().catch((err: unknown) => {

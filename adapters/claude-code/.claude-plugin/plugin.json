@@ -1,0 +1,7 @@
+{
+  "name": "egress-eye",
+  "version": "0.1.0",
+  "description": "Per-session egress visibility for AI coding agents: every external URL and secret tool calls try to send, with verdicts, reasons, and sources. Report-first; blocking opt-in.",
+  "hooks": "hooks",
+  "commands": "commands"
+}

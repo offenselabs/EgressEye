@@ -92,11 +92,14 @@ Data lives in `~/.egress-eye/` (override with `EGRESS_EYE_HOME`): session JSONL,
 
 ## Adapters
 
-| Harness | Status |
-|---|---|
-| ZCode | ✅ shipped (config hooks + plugin manifest) |
-| OpenCode | planned (next) |
-| Claude Code | planned (`.claude-plugin` compat manifest mostly carries over) |
+| Harness | Status | Install | Notes |
+|---|---|---|---|
+| ZCode | ✅ shipped | `init zcode` | full fidelity incl. conversation summary at Stop |
+| Claude Code | ✅ shipped | `init claude-code` | config hooks + plugin manifest; summary to log (Stop rejects stdout) |
+| Codex | ✅ shipped | `init codex` | TOML managed block; **upstream gaps**: some tools never emit PreToolUse, and Windows `command_execution` doesn't yet (#20204, #24453) |
+| Hermes (Nous Research) | ✅ shipped | `init hermes` | Python plugin wrapper → Node engine; `pre_tool_call` veto in block mode |
+| OpenCode | ✅ shipped | `init opencode` | ESM plugin (Bun); `tool.execute.before`, blocks by throwing |
+| DeepSeek Harness (dsh) | 🔍 feasible — not shipped | — | plugin interception proven in its ecosystem; dev-preview API in flux — [assessment](docs/adapters/deepseek-feasibility.md) |
 
 Adapter = a hooks manifest + an `init` path + the same engine. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for how to add one.

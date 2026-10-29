@@ -2,6 +2,7 @@ import { processToolCall } from "./core.js";
 import { summarizeSession, currentSessionId, rotateSession } from "../store/session.js";
 import { renderSummary, headlineLine } from "../report/render.js";
 import { dataDir, ensureDir, sanitizeSessionId } from "../lib/paths.js";
+import { readStdin, parseHookJson } from "./stdin.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,45 +19,6 @@ import { pathToFileURL } from "node:url";
  *   - a monitoring hook must never break a session: unexpected errors exit 0
  */
 
-const MAX_STDIN_BYTES = 10 * 1024 * 1024;
-
-function readStdin(timeoutMs = 5000): Promise<string> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let done = false;
-    const finish = (err?: Error) => {
-      if (done) return;
-      done = true;
-      if (err) resolve("");
-      else resolve(Buffer.concat(chunks).toString("utf8"));
-    };
-    const timer = setTimeout(() => finish(), timeoutMs);
-    process.stdin.on("data", (c: Buffer) => {
-      chunks.push(c);
-      if (chunks.reduce((n, b) => n + b.length, 0) > MAX_STDIN_BYTES) finish();
-    });
-    process.stdin.on("end", () => {
-      clearTimeout(timer);
-      finish();
-    });
-    process.stdin.on("error", () => {
-      clearTimeout(timer);
-      finish();
-    });
-    process.stdin.resume();
-  });
-}
-
-function parseHookJson(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
 function pick(obj: Record<string, unknown>, ...keys: string[]): unknown {
   for (const k of keys) {
     if (obj[k] !== undefined && obj[k] !== null) return obj[k];
@@ -66,16 +28,19 @@ function pick(obj: Record<string, unknown>, ...keys: string[]): unknown {
 
 /** Handle one hook event. Returns the process exit code (0 pass, 2 deny). */
 export async function runHook(event: string, sessionArg: string | null, rawStdin: string): Promise<number> {
+  const stdinJson = parseHookJson(rawStdin);
   if (event === "session-start") {
     rotateSession();
     return 0;
   }
 
   if (event === "pre-tool-use" || event === "post-tool-use-failure") {
-    const json = parseHookJson(rawStdin);
-    const tool = String(pick(json, "tool_name", "toolName", "name") ?? "unknown");
-    const input = pick(json, "tool_input", "toolInput", "input", "args") ?? {};
-    const result = await processToolCall({ event, tool, input, sessionId: sessionArg });
+    const tool = String(pick(stdinJson, "tool_name", "toolName", "name") ?? "unknown");
+    const input = pick(stdinJson, "tool_input", "toolInput", "input", "args") ?? {};
+    // Adapters that cannot pass the session id as argv (Claude Code, Codex)
+    // put it in the stdin payload instead.
+    const session = sessionArg ?? sanitizeSessionId(String(pick(stdinJson, "session_id", "sessionId") ?? ""));
+    const result = await processToolCall({ event, tool, input, sessionId: session });
 
     if (event === "pre-tool-use" && process.env.EGRESS_EYE_BLOCK === "1") {
       const malicious = result.judgements.filter((j) => j.verdict === "malicious");
@@ -90,7 +55,7 @@ export async function runHook(event: string, sessionArg: string | null, rawStdin
   }
 
   if (event === "stop") {
-    const id = sessionArg ?? currentSessionId(null);
+    const id = sessionArg ?? sanitizeSessionId(String(pick(stdinJson, "session_id", "sessionId") ?? "")) ?? currentSessionId(null);
     const summary = summarizeSession(id);
     ensureDir(dataDir());
     fs.writeFileSync(path.join(dataDir(), "last-report.txt"), renderSummary(summary, { color: false }), "utf8");
