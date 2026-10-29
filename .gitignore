@@ -7,3 +7,4 @@ Thumbs.db
 .env
 .egress-eye/
 coverage/
+.auto/

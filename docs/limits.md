@@ -31,6 +31,14 @@ feed-confirmed hits for that reason.
 
 ## Operational limits
 
+- **The default feed is a rolling window.** The OpenPhish community feed holds
+  only ~300 *recent* entries — coverage for a given host decays within days,
+  and a URL that was flagged yesterday can legitimately be `unknown` today.
+  For real protection, add a keyed source (`EGRESS_EYE_URLHAUS_AUTH_KEY`,
+  `EGRESS_EYE_GSB_KEY`). Measured per-call hook latency: ~86 ms median at a
+  50k-row mirror, Node-boot floor (~45–55 ms) at the default feed size
+  (see docs/release-assessment.md).
+
 - Feed coverage is only as good as the source: the OpenPhish community feed is
   recent-entries (~hundreds of URLs), not exhaustive. Add keyed sources
   (URLhaus, Safe Browsing) for better recall.
