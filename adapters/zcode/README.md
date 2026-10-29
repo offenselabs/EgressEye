@@ -25,8 +25,9 @@ This directory is a valid ZCode plugin: `.zcode-plugin/plugin.json` +
 (GitHub repository) and install from Settings → Plugin Management → Discover.
 Plugin hooks auto-enable the runner — no config edit needed.
 
-Note: the plugin form references `${ZCODE_PLUGIN_ROOT}/dist/...`, so the
-published marketplace repo must include the compiled `dist/` directory.
+Note: the plugin form references `${ZCODE_PLUGIN_ROOT}/dist/...`, and `dist/`
+is not committed — build from a clone (`npm install`) or grab the `dist` zip
+attached to each GitHub release and place it next to the manifest.
 
 ## Hook contract
 

@@ -29,7 +29,8 @@ to try it.
 `adapters/claude-code/` is a valid Claude Code plugin:
 `.claude-plugin/plugin.json` + `hooks/hooks.json` + `commands/`. Publish this
 repo as a marketplace and install with `/plugin`. The manifest references
-`${CLAUDE_PLUGIN_ROOT}/dist/...`, so the published repo must include `dist/`.
+`${CLAUDE_PLUGIN_ROOT}/dist/...` — build from a clone (`npm install`) or grab
+the `dist` zip attached to each GitHub release.
 
 ## Contract notes
 

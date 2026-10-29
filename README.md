@@ -1,6 +1,38 @@
 # EgressEye
 
-**Per-session egress visibility for AI coding agents.** Every external URL and every piece of secret material your agent's tool calls try to send — with verdicts, reasons, and sources — collected by harness hooks and summarized in one report:
+**Know what your AI coding agent is doing with your network — before it becomes a problem.**
+
+[![CI](https://github.com/offenselabs/EgressEye/actions/workflows/ci.yml/badge.svg)](https://github.com/offenselabs/EgressEye/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+AI coding agents (Claude Code, Codex, ZCode, Hermes, OpenCode, …) run shell
+commands, fetch web pages, and install packages on your machine. If an agent
+is tricked — for example by instructions hidden in a web page or repository it
+reads — it can quietly contact attacker-controlled servers or send your
+`.env` file, API tokens, or source code somewhere you never intended.
+
+EgressEye sits inside your agent harness and answers one question after every
+tool call:
+
+> **What did this session contact, what looked wrong, and why?**
+
+No configuration files to write, no proxy to set up, nothing to babysit.
+
+---
+
+## Is this for me?
+
+- You use an AI coding agent day to day and want to *see* its outbound
+  activity — not just hope it's fine.
+- You run open-weight / locally hosted models and want runtime visibility
+  (you can't know what a model will do just by looking at its weights).
+- You want a report you can actually read: every URL and secret material a
+  tool call tried to send, with a verdict, a reason, and the source that
+  justified it.
+
+## See it in one minute
+
+After a normal working session, run `egress-eye report --last`:
 
 ```
 EgressEye — session 20261028-2359-1a2b
@@ -14,110 +46,129 @@ SECRET     DB_H…(8 chars)                               Text contains 4 UPPER_
 unknown    https://telemetry-ingest-9d3.example/beacon  No signals — not in known-malicious feeds, …     1×    Bash
 ```
 
-## Why
+Notice the last row: EgressEye does **not** pretend that "not on a blocklist"
+means "safe". Unknown means unknown — that honesty is the product.
 
-An agent — especially one running open-weight models — can be steered by indirect prompt injection into fetching attacker-controlled URLs or sending your secrets somewhere. You cannot predict that from the model's weights; you can only observe what it actually does, **before and as it happens**. EgressEye sits in the harness's hook layer, inspects every tool call, and answers one question honestly:
+## Getting started
 
-> *What did this session contact, what looked wrong, and why?*
-
-Design principles:
-
-1. **Report-first.** Per-request blocking is commoditized; session-level visibility is the gap. Blocking exists (`EGRESS_EYE_BLOCK=1`) but is opt-in and limited to feed-confirmed hits.
-2. **Deterministic detection.** Feeds, heuristics, and domain-age lookups only. No LLM in the decision path — a judge model can be prompt-injected by the very content it judges.
-3. **Local-first.** Feed and allowlist checks run in memory against a downloaded mirror; URLs are stored query-stripped (including the Safe Browsing cache); secrets are redacted at creation. By default the only outbound traffic is the feed download itself and RDAP registrar queries for a looked-up URL's registrable domain (opt out with `EGRESS_EYE_RDAP=0`); Google Safe Browsing is opt-in.
-4. **Zero runtime dependencies.** Node builtins only — a security tool should not be a supply-chain risk.
-5. **Honest by default.** A URL with no signals is reported as `unknown`, never as "safe". Read [docs/limits.md](docs/limits.md) before trusting this as a boundary: **it is a visibility tool, not a sandbox.**
-
-## Quickstart
+You need [Node.js](https://nodejs.org) 20 or newer. Then, from a clone of
+this repository:
 
 ```bash
-npm install                      # builds dist/ (TypeScript, dev deps only)
-node dist/cli.js init zcode      # wire hooks into ~/.zcode/cli/config.json
-node dist/cli.js update-feeds    # mirror the OpenPhish feed once
+npm install                      # builds the tool (TypeScript, dev deps only)
+
+node dist/cli.js init zcode      # wire the hooks into your harness (see adapters below)
+node dist/cli.js update-feeds    # download the blocklist mirror once
+
 # … use your agent normally …
-node dist/cli.js report --last   # the session report
-node dist/cli.js doctor          # validate the installation
+node dist/cli.js report --last   # see what happened
+node dist/cli.js doctor          # check that everything is wired correctly
 ```
 
-ZCode picks the hooks up on the next session. Alternatively, install the
-plugin from `adapters/zcode/` via Settings → Plugin Management (plugin hooks
-enable the runner automatically — see [adapters/zcode/README.md](adapters/zcode/README.md)).
+That's it. Hooks load when you start your next agent session. Everything is
+report-only by default — EgressEye observes; it never blocks unless you ask
+it to.
 
-One-shot checks without installing anything:
+**Try it right now, without installing anything:**
 
 ```bash
-node dist/cli.js scan 'curl http://some-url.example && export TOKEN=ghp_…'
+node dist/cli.js scan 'curl https://example.com'
+node dist/cli.js scan 'export TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234'
 ```
 
-## What it inspects
+## How it works
 
-On every tool call (`PreToolUse`, all tools; also `PostToolUseFailure` for attempted-but-failed calls):
+```
+your agent (Bash, WebFetch, …)
+   └─ before each tool call, a hook runs EgressEye
+        ├─ extracts URLs and secret-like patterns from the tool input
+        ├─ checks them: blocklist mirror → heuristics → domain age
+        └─ appends a redacted record to the session log
+   └─ when the session ends, EgressEye prints the summary report
+```
 
-- **URLs** — from command strings, tool arguments, written file contents; handles defanged forms (`hxxp://`, `[.]`), IP literals, punycode, embedded credentials, non-standard ports.
-- **Secrets** — AWS/GitHub/OpenAI/Anthropic/Slack/Google tokens, JWTs, private key blocks, DB connection strings, high-entropy assignments to secret-like keywords, and pasted `.env` blobs. Always redacted.
-- **Session patterns** — repeated small sends to the same low-reputation host (sharded exfiltration) surface as one aggregated finding.
+Every verdict comes with a **source** and a **reason**, so you can judge it:
 
-### Verdict sources (in order)
-
-| Order | Source | Needs | Sends data out? |
-|---|---|---|---|
-| 1 | OpenPhish community feed mirror (default) | nothing | no — local mirror |
-| 1 | URLhaus by abuse.ch (`EGRESS_EYE_FEED_SOURCE=urlhaus`) | `EGRESS_EYE_URLHAUS_AUTH_KEY` | no — local mirror |
-| 2 | Google Safe Browsing | `EGRESS_EYE_GSB_KEY` | yes — looked-up URLs go to Google |
-| 3 | Heuristics: typosquat distance vs dev-domain allowlist, IP literal, punycode, credentials-in-URL, risky TLDs, ports | nothing | no |
-| 4 | RDAP domain age (newly-registered domains < 30 days) | network (cached, budgeted) | registrar RDAP queries |
-| — | Allowlist of ~90 known-good dev domains | nothing | no |
-
-Every verdict records **source + reason** (`urlhaus`, `google-safe-browsing`, `heuristic:typosquat`, `rdap`, `allowlist`, `none`), so the report is auditable.
-
-> Feed-rot note: URLhaus's public CSV downloads were retired (HTTP 410) and
-> abuse.ch's API became key-gated — this project now defaults to OpenPhish and
-> treats feeds as swappable sources, not assumptions.
-
-## Configuration
-
-All via environment variables (see `egress-eye help` for the full list):
-
-| Variable | Effect |
+| Verdict | Meaning in plain words |
 |---|---|
-| `EGRESS_EYE_BLOCK=1` | deny tool calls judged malicious (exit 2 → harness blocks) |
-| `EGRESS_EYE_ANNOUNCE=0` | stop injecting the session summary into the conversation at `Stop` |
-| `EGRESS_EYE_FEED_SOURCE` | `openphish` (default) or `urlhaus` |
-| `EGRESS_EYE_FEED_FILE` | use a specific feed file (`.csv`/`.json`/`.txt`) |
-| `EGRESS_EYE_GSB_KEY` | enable Google Safe Browsing |
-| `EGRESS_EYE_RDAP=0` | disable newly-registered-domain lookups |
-| `EGRESS_EYE_OFFLINE=1` | never touch the network |
+| `malicious` | The URL (or its host) is on a blocklist like OpenPhish or URLhaus. |
+| `suspicious` | A deterministic rule matched — e.g. the domain is a near-copy of `github.com`, the URL embeds credentials, the domain was registered days ago. |
+| `clean` | The domain is a well-known, verified part of development infrastructure (`npmjs.org`, `github.com`, …). |
+| `unknown` | No signals either way. We don't guess. |
 
-Data lives in `~/.egress-eye/` (override with `EGRESS_EYE_HOME`): session JSONL, feed mirror, caches.
+Secret findings (API keys, tokens, `.env` contents passing through tool
+calls) are always **redacted**: only a 4-character preview and the length are
+ever stored.
 
-## Adapters
+### What it catches
 
-| Harness | Status | Install | Notes |
-|---|---|---|---|
-| ZCode | ✅ shipped | `init zcode` | full fidelity incl. conversation summary at Stop |
-| Claude Code | ✅ shipped | `init claude-code` | config hooks + plugin manifest; summary to log (Stop rejects stdout) |
-| Codex | ✅ shipped | `init codex` | TOML managed block; JSON deny at exit 0 (Windows PowerShell mangles exit-2 denies, #54072); upstream caveat: some tools never emit PreToolUse (#20204) |
-| Hermes (Nous Research) | ✅ shipped | `init hermes` | Python plugin wrapper → Node engine; `pre_tool_call` veto in block mode |
-| OpenCode | ✅ shipped | `init opencode` | ESM plugin (Bun); `tool.execute.before`, blocks by throwing |
-| DeepSeek Harness (dsh) | 🔍 feasible — not shipped | — | plugin interception proven in its ecosystem; dev-preview API in flux — [assessment](docs/adapters/deepseek-feasibility.md) |
+- Fetches of known-phishing/malware URLs — including defanged ones
+  (`hxxp://evil[.]com`) hidden in scripts the agent writes
+- Lookalike/typosquatted domains (`gihub.com`), punycode tricks, raw IP URLs
+- Brand-new domains (registered days ago — classic throwaway exfil infra)
+- Credentials and tokens in tool calls: AWS/GitHub/OpenAI/Slack/Google
+  tokens, JWTs, private keys, database connection strings, pasted `.env`
+  files
+- **Sharded exfiltration** — many small sends to the same low-reputation
+  host get aggregated into one finding that per-request tools structurally
+  miss
 
-Adapter = a hooks manifest + an `init` path + the same engine. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for how to add one.
+## Honest limits (please read)
 
-## Evaluation
+EgressEye is a **visibility tool, not a sandbox**. A determined compromised
+agent can bypass hooks; unknown URLs with no signals stay `unknown`; things
+that never pass through a tool call (raw sockets, other processes) are
+invisible to any hook-based tool. Read [docs/limits.md](docs/limits.md) for
+the complete bypass list and [docs/threat-model.md](docs/threat-model.md) for
+what this defends against. Want hard blocking? Set `EGRESS_EYE_BLOCK=1` —
+but it only ever blocks feed-confirmed malicious calls, and it's still not a
+security boundary.
 
-`npm run eval` replays 39 labeled scenarios (benign installs, feed hits,
-typosquats, defanged URLs, credential exfil, env-blob pastes, sharded sends)
-through the exact hook code path, offline, against a fixture feed. The corpus
-in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant to be adopted — if you
-build an agent-egress tool, run it against the same corpus so results compare.
+## Privacy
 
-## Documentation
+- Feed checks run in memory against a downloaded mirror — looked-up URLs do
+  **not** leave your machine for feed checks.
+- URLs are stored **query-stripped** (no tracking parameters on disk).
+- Secrets are redacted at creation; tool inputs are never stored.
+- By default, the only outbound traffic is the blocklist download itself and
+  RDAP registrar lookups for a URL's registrable domain (disable with
+  `EGRESS_EYE_RDAP=0`; everything with `EGRESS_EYE_OFFLINE=1`).
+- Google Safe Browsing is strictly opt-in (it sends looked-up URLs to
+  Google).
+- Zero runtime dependencies — Node builtins only. A security tool should not
+  be a supply-chain risk.
 
-- [docs/threat-model.md](docs/threat-model.md) — attacker model, what v1 defends, what it cannot
-- [docs/limits.md](docs/limits.md) — the honest bypass list
-- [adapters/zcode/README.md](adapters/zcode/README.md) — hook contract details
+## Harness support
+
+| Harness | Install | Notes |
+|---|---|---|
+| ZCode | `init zcode` | full fidelity, incl. summary in the conversation |
+| Claude Code | `init claude-code` | config hooks + marketplace manifest |
+| Codex | `init codex` | TOML managed block; JSON deny (Windows-safe) |
+| Hermes (Nous Research) | `init hermes` | Python plugin wrapper → Node engine |
+| OpenCode | `init opencode` | ESM plugin (runs on Bun) |
+| DeepSeek Harness (dsh) | research | [feasibility assessment](docs/adapters/deepseek-feasibility.md) |
+
+Every adapter drives the same engine; see each `adapters/<name>/README.md`
+for contract details and harness-specific caveats. Marketplace/plugin
+manifests reference `dist/`, which is not committed — build first, or grab
+the `dist` zip attached to each release.
+
+## For contributors
+
+- `npm test` — 70 unit tests (`node --test`, fully offline)
+- `npm run eval` — 39-scenario labeled corpus replayed through the real hook
+  path; the corpus in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant
+  to be adopted by other tools so results can be compared
+- `npm run doctor` — end-to-end smoke test of a real spawned hook
+- See [CONTRIBUTING.md](CONTRIBUTING.md) — three hard rules: zero runtime
+  dependencies, no LLM in the verdict path, honesty over coverage
+
+Deep dives: [docs/threat-model.md](docs/threat-model.md) (attacker model) ·
+[docs/limits.md](docs/limits.md) (the complete bypass table) ·
+[adapters/zcode/README.md](adapters/zcode/README.md) (hook contract details)
 
 ## License
 
-MIT. Feed data is subject to its providers' terms (OpenPhish community feed, abuse.ch).
+[MIT](LICENSE). Feed data is subject to its providers' terms (OpenPhish
+community feed, abuse.ch URLhaus).

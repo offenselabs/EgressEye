@@ -4,3 +4,6 @@ dist/
 .DS_Store
 Thumbs.db
 .zcode/
+.env
+.egress-eye/
+coverage/

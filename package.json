@@ -10,6 +10,14 @@
   "bin": {
     "egress-eye": "dist/cli.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/offenselabs/EgressEye.git"
+  },
+  "bugs": {
+    "url": "https://github.com/offenselabs/EgressEye/issues"
+  },
+  "homepage": "https://github.com/offenselabs/EgressEye#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/",
