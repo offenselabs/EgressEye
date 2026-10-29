@@ -30,17 +30,21 @@ shallow real-world protection and demo results are not reproducible over time.
 (`EGRESS_EYE_URLHAUS_AUTH_KEY`, Google Safe Browsing) for real protection;
 keep longer-lived mirrors on the roadmap.
 
-### F2 — Hook latency profile (P2, quantified)
+### F2 — Hook latency profile (P2, measured and closed)
 Measured with the autoresearch loop against a 50k-row / 7.4 MB synthetic
 mirror (the realistic keyed-feed worst case): **86 ms median, ~120 ms p95** per
 tool call; the default 300-entry feed sits at Node-boot floor (~45–55 ms).
-A focused parse optimization (no-quote `split(",")` fast path, manual host
-extraction instead of `new URL()`) moved the metric **not at all** (86.9 vs
-86.4) and was discarded per the loop's rule — at this scale the cost is
-**per-process Node boot**, which is inherent to the per-call hook design.
-Both numbers are far under every harness timeout. Levers if it ever matters:
-precompiled hosts-only snapshot written by `update-feeds`, or a resident
-daemon (tracked in issue #1). Ledger: `.auto/` (segment `hook-latency-final`).
+Two load-path hypotheses were measured through the loop and both closed:
+- *Faster CSV parsing* (no-quote `split(",")` fast path, manual host
+  extraction): **no effect** (86.9 vs 86.4) — the parse slice is small.
+- *Precompiled `{urls, hosts}` snapshot*: **worse** (115.4 vs 86.4) —
+  `JSON.parse` of a ~4.5 MB snapshot plus building two 50k-entry Sets per
+  process costs more than the raw CSV parse it replaced.
+Conclusion: the per-process hook design is at its practical floor — the cost
+is **Node process boot**, inherent to the per-call hook architecture. Both
+numbers are far under every harness timeout. The only remaining lever of
+consequence is a resident daemon (tracked in issue #1; out of scope for
+v0.1.x). Ledger: `.auto/` (segment `hook-latency-final`).
 
 ### F3 — Tarball ships more than needed (P3)
 No `files` field: `.github/`, `scripts/`, `src/`, tests all ship alongside
@@ -67,9 +71,8 @@ documented and tracked.
    keyed-source quickstart in README.
 2. **P1** — whole-hook wall-clock budget (issue #1) — bounds worst-case cold
    feed refresh + RDAP.
-3. **P2** — precompiled hosts-only snapshot (`update-feeds` writes, hook
-   reads) — the measured next lever if latency ever matters.
-4. **P2** — atomic feed/cache writes (issue #1).
-5. **P3** — package `files` field.
-6. **P3** — resident daemon (only if hook latency ever becomes a real
-   complaint; boot floor is ~45 ms today).
+3. **P2** — atomic feed/cache writes (issue #1).
+4. **P3** — package `files` field.
+5. **P3** — resident daemon (only if hook latency ever becomes a real
+   complaint; the floor is ~45 ms today, and both in-process load-path
+   optimizations were measured and closed — see F2).
