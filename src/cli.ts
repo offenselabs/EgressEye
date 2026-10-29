@@ -46,7 +46,11 @@ Adapters:
 Environment:
   EGRESS_EYE_HOME              data directory (default ~/.egress-eye)
   EGRESS_EYE_BLOCK=1           deny tool calls judged malicious (default: report only)
+  EGRESS_EYE_DENY=json         deny via JSON decision at exit 0 instead of exit 2
+                               (default for the Codex adapter; see #54072)
   EGRESS_EYE_ANNOUNCE=0        stop injecting the session summary into the conversation
+  EGRESS_EYE_REPEAT_THRESHOLD  distinct-URL contacts per host before the sharded-egress
+                               aggregate fires (default 5)
   EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus
   EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt)
   EGRESS_EYE_URLHAUS_AUTH_KEY  abuse.ch auth key (only for EGRESS_EYE_FEED_SOURCE=urlhaus)
@@ -267,6 +271,7 @@ function initZcode(flags: Record<string, string | boolean>, project: boolean): v
 const CLAUDE_EVENTS: Array<{ key: string; event: string }> = [
   { key: "SessionStart", event: "session-start" },
   { key: "PreToolUse", event: "pre-tool-use" },
+  { key: "PostToolUseFailure", event: "post-tool-use-failure" },
   { key: "Stop", event: "stop" },
   { key: "SessionEnd", event: "session-end" },
 ];
@@ -321,7 +326,7 @@ function initClaudeCode(flags: Record<string, string | boolean>, project: boolea
   cfg.hooks = hooksBlock;
   backupAndWrite(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
   process.stdout.write(`Installed egress-eye hooks into ${cfgPath}\n`);
-  process.stdout.write("  SessionStart, PreToolUse (all tools), Stop, SessionEnd\n");
+  process.stdout.write("  SessionStart, PreToolUse (all tools), PostToolUseFailure, Stop, SessionEnd\n");
   printNextSteps("Claude Code");
 }
 
@@ -333,7 +338,9 @@ export const CODEX_BLOCK_END = "# <<< egress-eye managed hooks block <<<";
 export function codexHookBlock(nodePath: string, hookScript: string): string {
   const node = toPosix(nodePath);
   const script = toPosix(hookScript);
-  const command = (event: string) => `command = '${node} "${script}" ${event}'`;
+  // Quote BOTH paths: on default Windows installs node lives at
+  // "C:\Program Files\nodejs\node.exe" (contains a space).
+  const command = (event: string) => `command = '"${node}" "${script}" ${event}'`;
   const entry = (eventName: string, event: string) =>
     [`[[hooks.${eventName}]]`, "", `[[hooks.${eventName}.hooks]]`, 'type = "command"', command(event), "timeout = 30", ""];
   return [
@@ -352,8 +359,12 @@ export function stripCodexBlock(content: string): string {
   if (start === -1) return content;
   const end = content.indexOf(CODEX_BLOCK_END, start);
   if (end === -1) return content;
-  const removed = content.slice(0, start) + content.slice(end + CODEX_BLOCK_END.length);
-  return removed.replace(/\n{3,}/g, "\n\n").replace(/\n*$/, "\n");
+  // Only the removed span and its seams may change — never rewrite the
+  // user's own content elsewhere in the file.
+  const head = content.slice(0, start).replace(/\n+$/, "\n");
+  const tail = content.slice(end + CODEX_BLOCK_END.length).replace(/^\n+/, "");
+  if (head.trim() === "") return tail;
+  return tail ? head + "\n" + tail : head;
 }
 
 function codexConfigPath(project: boolean): string {
@@ -378,8 +389,9 @@ function initCodex(flags: Record<string, string | boolean>, project: boolean): v
   process.stdout.write(`Installed egress-eye hooks into ${cfgPath}\n`);
   process.stdout.write("  SessionStart, PreToolUse (all tools), Stop\n");
   process.stdout.write("  Note: Codex may ask you to trust hooks on first run.\n");
-  process.stdout.write("  Known upstream gaps: some tool handlers never emit PreToolUse, and on\n");
-  process.stdout.write("  Windows `command_execution` does not emit it yet (openai/codex #20204, #24453).\n");
+  process.stdout.write("  Deny decisions are emitted as JSON at exit 0: Codex on Windows runs\n");
+  process.stdout.write("  hooks under PowerShell, which mangles exit-code denies (openai/codex#54072).\n");
+  process.stdout.write("  Known upstream gap: some tool handlers never emit PreToolUse (#20204).\n");
   printNextSteps("Codex");
 }
 

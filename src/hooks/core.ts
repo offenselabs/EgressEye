@@ -64,7 +64,9 @@ function inputToText(input: unknown): string {
 
 export async function processToolCall(call: ToolCallInput, opts: ProcessOptions = {}): Promise<ProcessResult> {
   const text = inputToText(call.input);
-  const sessionId = currentSessionId(call.sessionId ?? null);
+  const persist = opts.persist ?? true;
+  // One-shot checks (scan) must not create or rotate the pointer session.
+  const sessionId = persist ? currentSessionId(call.sessionId ?? null) : call.sessionId ?? "";
 
   const feed = opts.urlhaus !== null ? (opts.urlhaus ?? (await getFeed())) : null;
   const judgeOpts: JudgeOptions = {
@@ -77,7 +79,7 @@ export async function processToolCall(call: ToolCallInput, opts: ProcessOptions 
   const secrets = scanSecrets(text);
   const judgements = await Promise.all(urls.map((u) => judgeUrl(u, judgeOpts)));
 
-  if (opts.persist ?? true) {
+  if (persist) {
     const now = new Date().toISOString();
     const note = call.event === "post-tool-use-failure" ? "attempted call failed" : undefined;
     const events: SessionEvent[] = [

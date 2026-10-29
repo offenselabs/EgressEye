@@ -219,13 +219,26 @@ export function summarizeSession(id: string): SessionSummary {
   const byVerdict: Record<Verdict, number> = { malicious: 0, suspicious: 0, clean: 0, unknown: 0 };
   for (const g of urlGroups.values()) byVerdict[g.verdict] = (byVerdict[g.verdict] ?? 0) + 1;
 
-  // Session-level aggregation: repeated contacts with the same non-clean host.
+  // Session-level aggregation: repeated contacts with the same HOST across
+  // distinct URLs — an attacker rotating paths (/beacon1, /beacon2, …) must
+  // not defeat the pattern. Already-malicious hosts are excluded (flagged
+  // per-request); allowlisted hosts are INCLUDED, because attacker-hostable
+  // PaaS domains (*.workers.dev, *.vercel.app, …) must not get a free pass.
+  const hostAgg = new Map<string, { count: number; urls: Set<string>; worst: Verdict }>();
+  for (const [value, g] of urlGroups) {
+    if (!g.host || g.verdict === "malicious") continue;
+    const cur = hostAgg.get(g.host) ?? { count: 0, urls: new Set<string>(), worst: "clean" as Verdict };
+    cur.count += g.count;
+    cur.urls.add(value);
+    if (VERDICT_ORDER[g.verdict]! < VERDICT_ORDER[cur.worst]!) cur.worst = g.verdict;
+    hostAgg.set(g.host, cur);
+  }
   const aggregates: string[] = [];
   const repeatThreshold = Number(process.env.EGRESS_EYE_REPEAT_THRESHOLD ?? 5);
-  for (const [value, g] of urlGroups) {
-    if (g.count >= repeatThreshold && g.verdict !== "clean" && g.verdict !== "malicious") {
+  for (const [host, agg] of hostAgg) {
+    if (agg.count >= repeatThreshold) {
       aggregates.push(
-        `Host ${g.host ?? value} was contacted ${g.count}× this session — repeated-egress pattern (possible sharded exfiltration across many small requests)`,
+        `Host ${host} was contacted ${agg.count}× across ${agg.urls.size} distinct URL(s) this session — repeated-egress pattern (possible sharded exfiltration; worst verdict: ${agg.worst})`,
       );
     }
   }

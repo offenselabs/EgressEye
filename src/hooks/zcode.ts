@@ -45,16 +45,30 @@ export async function runHook(event: string, sessionArg: string | null, rawStdin
     if (event === "pre-tool-use" && process.env.EGRESS_EYE_BLOCK === "1") {
       const malicious = result.judgements.filter((j) => j.verdict === "malicious");
       if (malicious.length > 0) {
-        process.stderr.write(
-          `[egress-eye] BLOCKED ${tool}: ${malicious.map((j) => j.url.url).join(", ")} — ${malicious[0]!.reason}\n`,
-        );
+        const reason = `[egress-eye] BLOCKED ${tool}: ${malicious.map((j) => j.url.url).join(", ")} — ${malicious[0]!.reason}`;
+        if (process.env.EGRESS_EYE_DENY === "json") {
+          // JSON deny at exit 0: robust where harnesses mangle exit codes
+          // (Codex on Windows runs hooks under PowerShell, which turns exit
+          // 2 into 1 — openai/codex#54072).
+          process.stdout.write(
+            JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: reason,
+              },
+            }) + "\n",
+          );
+          return 0;
+        }
+        process.stderr.write(reason + "\n");
         return 2;
       }
     }
     return 0;
   }
 
-  if (event === "stop") {
+  if (event === "stop" || event === "session-end") {
     const id = sessionArg ?? sanitizeSessionId(String(pick(stdinJson, "session_id", "sessionId") ?? "")) ?? currentSessionId(null);
     const summary = summarizeSession(id);
     ensureDir(dataDir());

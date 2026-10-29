@@ -29,5 +29,7 @@ export function sanitizeSessionId(raw: string | undefined): string | null {
   const id = raw.trim();
   if (!/^[A-Za-z0-9._-]{1,80}$/.test(id)) return null;
   if (id.includes("..")) return null;
+  // Windows reserved device names are invalid as file bases (CON.jsonl etc.).
+  if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(id)) return null;
   return id;
 }

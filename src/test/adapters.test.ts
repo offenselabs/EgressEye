@@ -75,15 +75,56 @@ test("hermes python plugin sources are complete", () => {
 /* -------------------------------- codex ---------------------------------- */
 
 test("codex TOML block contains marker fences, PascalCase tables, kebab-case events", () => {
-  const block = codexHookBlock("C:\\tools\\node.exe", "C:\\repo\\dist\\hooks\\codex.js");
+  const block = codexHookBlock("C:\\Program Files\\nodejs\\node.exe", "C:\\repo\\dist\\hooks\\codex.js");
   assert.ok(block.includes(CODEX_BLOCK_START));
   assert.ok(block.includes(CODEX_BLOCK_END));
   assert.ok(block.includes("[[hooks.PreToolUse]]"));
   assert.ok(block.includes("[[hooks.SessionStart]]"));
   assert.ok(block.includes("[[hooks.Stop]]"));
   assert.ok(block.includes('codex.js" pre-tool-use'));
+  // BOTH paths quoted — "C:\Program Files\nodejs\node.exe" contains a space.
+  assert.ok(block.includes('\'"C:/Program Files/nodejs/node.exe" "C:/repo/dist/hooks/codex.js" pre-tool-use\''));
   assert.ok(!block.includes("PreToolUse]]\\ncommand"), "no PascalCase event passed to the entrypoint");
   assert.ok(block.includes("C:/repo/dist/hooks/codex.js"), "paths are posix-style for shell safety");
+});
+
+test("deny decisions can be emitted as JSON at exit 0 (Codex/Windows #54072)", async () => {
+  process.env.EGRESS_EYE_BLOCK = "1";
+  process.env.EGRESS_EYE_DENY = "json";
+  const chunks: string[] = [];
+  const orig = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((c: string | Uint8Array) => {
+    chunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const code = await runHook("pre-tool-use", "deny-json-sess", JSON.stringify({ tool_name: "Bash", tool_input: { command: MALICIOUS } }));
+    assert.equal(code, 0, "JSON deny must exit 0");
+    const parsed = JSON.parse(chunks.join("").trim());
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /stage-logs-collect-9f3\.top/);
+  } finally {
+    process.stdout.write = orig;
+    delete process.env.EGRESS_EYE_BLOCK;
+    delete process.env.EGRESS_EYE_DENY;
+  }
+});
+
+test("session-end is handled like stop (no unknown-event error)", async () => {
+  const errChunks: string[] = [];
+  const orig = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((c: string | Uint8Array) => {
+    errChunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await runHook("session-end", "sess-e2e-check", "");
+    assert.equal(code, 0);
+    assert.equal(errChunks.join("").includes("unknown hook event"), false);
+  } finally {
+    process.stderr.write = orig;
+  }
 });
 
 test("codex strip removes the managed block and preserves other config", () => {

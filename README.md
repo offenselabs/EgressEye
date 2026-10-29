@@ -24,7 +24,7 @@ Design principles:
 
 1. **Report-first.** Per-request blocking is commoditized; session-level visibility is the gap. Blocking exists (`EGRESS_EYE_BLOCK=1`) but is opt-in and limited to feed-confirmed hits.
 2. **Deterministic detection.** Feeds, heuristics, and domain-age lookups only. No LLM in the decision path — a judge model can be prompt-injected by the very content it judges.
-3. **Local-first.** Mirror feeds are checked in memory; URLs are query-stripped before being stored; secrets are redacted at creation. Nothing leaves your machine unless you explicitly opt into a keyed API (Google Safe Browsing).
+3. **Local-first.** Feed and allowlist checks run in memory against a downloaded mirror; URLs are stored query-stripped (including the Safe Browsing cache); secrets are redacted at creation. By default the only outbound traffic is the feed download itself and RDAP registrar queries for a looked-up URL's registrable domain (opt out with `EGRESS_EYE_RDAP=0`); Google Safe Browsing is opt-in.
 4. **Zero runtime dependencies.** Node builtins only — a security tool should not be a supply-chain risk.
 5. **Honest by default.** A URL with no signals is reported as `unknown`, never as "safe". Read [docs/limits.md](docs/limits.md) before trusting this as a boundary: **it is a visibility tool, not a sandbox.**
 
@@ -96,7 +96,7 @@ Data lives in `~/.egress-eye/` (override with `EGRESS_EYE_HOME`): session JSONL,
 |---|---|---|---|
 | ZCode | ✅ shipped | `init zcode` | full fidelity incl. conversation summary at Stop |
 | Claude Code | ✅ shipped | `init claude-code` | config hooks + plugin manifest; summary to log (Stop rejects stdout) |
-| Codex | ✅ shipped | `init codex` | TOML managed block; **upstream gaps**: some tools never emit PreToolUse, and Windows `command_execution` doesn't yet (#20204, #24453) |
+| Codex | ✅ shipped | `init codex` | TOML managed block; JSON deny at exit 0 (Windows PowerShell mangles exit-2 denies, #54072); upstream caveat: some tools never emit PreToolUse (#20204) |
 | Hermes (Nous Research) | ✅ shipped | `init hermes` | Python plugin wrapper → Node engine; `pre_tool_call` veto in block mode |
 | OpenCode | ✅ shipped | `init opencode` | ESM plugin (Bun); `tool.execute.before`, blocks by throwing |
 | DeepSeek Harness (dsh) | 🔍 feasible — not shipped | — | plugin interception proven in its ecosystem; dev-preview API in flux — [assessment](docs/adapters/deepseek-feasibility.md) |

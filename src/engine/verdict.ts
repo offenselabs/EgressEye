@@ -1,5 +1,5 @@
 import { ExtractedUrl } from "./extract.js";
-import { Finding, heuristicFindings, worstSeverity } from "./heuristics.js";
+import { Finding, Severity, heuristicFindings, worstSeverity } from "./heuristics.js";
 import { isAllowlistedHost, registrableDomain } from "./allowlist.js";
 import { MirrorFeed } from "./sources/feeds.js";
 import { gsbEnabled, gsbLookup } from "./sources/safebrowsing.js";
@@ -42,6 +42,12 @@ function combineReason(findings: Finding[]): string {
   return findings.map((f) => f.reason).join("; ");
 }
 
+const SEVERITY_RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1 };
+
+function sourceFinding(findings: Finding[]): Finding {
+  return [...findings].sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])[0]!;
+}
+
 export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promise<Judgement> {
   const mk = (verdict: Verdict, source: string, reason: string, findings: Finding[] = []): Judgement => ({
     url: u,
@@ -66,10 +72,11 @@ export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promis
     }
   }
 
-  // 2. Google Safe Browsing (only when the user configured a key).
+  // 2. Google Safe Browsing (only when the user configured a key). The
+  // query-stripped form is sent and cached — see README privacy principle.
   if ((opts.gsb ?? true) && gsbEnabled()) {
-    const matches = await gsbLookup([u.fullUrl]);
-    const threat = matches.get(u.fullUrl);
+    const matches = await gsbLookup([u.url]);
+    const threat = matches.get(u.url);
     if (threat) return mk("malicious", "google-safe-browsing", `Listed by Google Safe Browsing (${threat})`);
   }
 
@@ -82,11 +89,11 @@ export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promis
     if (!severity || severity === "low") {
       return mk("clean", "allowlist", `Registrable domain ${registrableDomain(u.host)} is in the known-good dev allowlist`, findings);
     }
-    return mk("suspicious", `heuristic:${findings[0]!.code}`, combineReason(findings), findings);
+    return mk("suspicious", `heuristic:${sourceFinding(findings).code}`, combineReason(findings), findings);
   }
 
   if (severity === "high" || severity === "medium") {
-    return mk("suspicious", `heuristic:${findings[0]!.code}`, combineReason(findings), findings);
+    return mk("suspicious", `heuristic:${sourceFinding(findings).code}`, combineReason(findings), findings);
   }
 
   // 5. Newly-registered-domain check via RDAP.

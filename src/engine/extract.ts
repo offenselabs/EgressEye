@@ -101,7 +101,7 @@ export function extractUrls(text: string): ExtractedUrl[] {
       path,
       isIpLiteral: net.isIP(host) !== 0,
       isPunycode: host.includes("xn--"),
-      hasCredentials: parsed.username !== "",
+      hasCredentials: parsed.username !== "" || parsed.password !== "",
       nonAsciiHost: /[^\x00-\x7F]/.test(host),
     });
   }

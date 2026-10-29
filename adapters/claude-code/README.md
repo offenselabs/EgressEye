@@ -15,10 +15,14 @@ node dist/cli.js init claude-code --uninstall
 
 - `SessionStart` — rotates the session file
 - `PreToolUse` (all tools) — extracts URLs + secrets from every tool call
+- `PostToolUseFailure` — records attempted-but-failed calls
 - `Stop` / `SessionEnd` — summary to the log and `~/.egress-eye/last-report.txt`
-  (stdout stays empty: Claude Code's Stop hook rejects unknown JSON keys, so
-  the conversation summary injection that ZCode supports is off here — set
-  `EGRESS_EYE_ANNOUNCE=1` to try it anyway)
+
+The conversation-summary injection that ZCode supports stays off by default
+here: per the Claude Code hooks docs, stdout JSON that fails schema
+validation is a non-blocking error, and `additionalContext` on `Stop` is not
+a documented combination — set `EGRESS_EYE_ANNOUNCE=1` to opt in if you want
+to try it.
 
 ## 2. Plugin manifest (marketplace distribution)
 

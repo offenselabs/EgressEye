@@ -34,6 +34,9 @@ test("classifies IP literals, punycode, credentials, ports", () => {
   const [cred] = extractUrls("https://admin:s3cretpw@example.net/exfil");
   assert.equal(cred!.hasCredentials, true);
   assert.equal(cred!.host, "example.net");
+
+  const [passOnly] = extractUrls("http://:s3cretpw@example.net/drop");
+  assert.equal(passOnly!.hasCredentials, true, "password-only credentials are also flagged");
 });
 
 test("query string is stripped from the loggable url but kept for feed lookup", () => {

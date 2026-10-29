@@ -14,6 +14,13 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/claude-code.js\" post-tool-use-failure", "timeout": 30 }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

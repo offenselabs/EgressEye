@@ -14,7 +14,10 @@ export function readStdin(timeoutMs = 5000): Promise<string> {
     const timer = setTimeout(() => finish(), timeoutMs);
     process.stdin.on("data", (c: Buffer) => {
       chunks.push(c);
-      if (chunks.reduce((n, b) => n + b.length, 0) > MAX_STDIN_BYTES) finish();
+      if (chunks.reduce((n, b) => n + b.length, 0) > MAX_STDIN_BYTES) {
+        process.stderr.write("[egress-eye] tool input exceeded 10MB — truncated; scanning what was received\n");
+        finish();
+      }
     });
     process.stdin.on("end", () => {
       clearTimeout(timer);

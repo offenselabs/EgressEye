@@ -22,13 +22,17 @@ These are upstream Codex behaviors, not EgressEye bugs:
 1. **PreToolUse coverage is inconsistent in Codex**: several tool handlers
    never emit hook events (openai/codex issue #20204). Some calls will not be
    inspected.
-2. **On Windows, `command_execution` does not emit PreToolUse** (openai/codex
-   issue #24453). Since shell commands are the primary exfiltration vector,
-   the Codex adapter on Windows is currently **much weaker** than the other
-   adapters. Treat it as partial visibility until upstream closes the gap.
+2. **Windows exit-code mangling**: Codex runs command hooks under
+   `powershell -Command` on Windows, and PowerShell converts a child's exit
+   code 2 into 1 — so exit-2 deny hooks fail open (openai/codex issue
+   #54072, open; the underlying exit-code loss was #24453, fixed in CLI
+   0.159.0). **This adapter therefore emits deny decisions as JSON at exit
+   0** (`{"hookSpecificOutput": {"permissionDecision": "deny", …}}`), which
+   works where exit codes are mangled.
 3. Hosted tools (e.g. WebSearch) are not hookable in Codex at all.
 4. Unsupported hook output fields fail the hook run (the tool call proceeds
-   anyway), which is why the Codex entrypoint keeps stdout empty by default.
+   anyway), which is why this adapter's stdout carries only the recognized
+   JSON deny shape and nothing else.
 
 Pair this adapter with periodic `egress-eye report --last` if you are on
 Windows — and consider the Codex session logs for post-hoc review.
@@ -37,6 +41,6 @@ Windows — and consider the Codex session logs for post-hoc review.
 
 - Hook stdin carries `tool_name` / `tool_input` / `session_id` — the shared
   engine entrypoint reads the session id from stdin.
-- Exit 0 = pass, exit 2 = deny (`EGRESS_EYE_BLOCK=1` only), internal errors
-  exit 0 so the monitor never breaks the session.
+- Exit 0 = pass (a JSON deny decision at exit 0 is the block mechanism),
+  internal errors exit 0 so the monitor never breaks the session.
 - Codex may prompt you to trust hooks on first run after install.
