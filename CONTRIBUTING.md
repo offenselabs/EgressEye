@@ -25,6 +25,12 @@ npm run doctor     # end-to-end smoke test
 All tests and the eval run offline against `eval/fixtures/urlhaus-sample.csv`
 via `EGRESS_EYE_FEED_FILE`. Never hit live feeds from tests.
 
+**Never commit real-format tokens as literals** — not even fake ones. GitHub
+push protection (and every other scanner downstream) cannot tell them from
+real leaks. Use split-string concatenation in tests (`"xox" + "b-…"`) or the
+corpus placeholder mechanism (`{{slack_token}}`, substituted at load time in
+`src/eval/run.ts`).
+
 ## Adding a verdict source
 
 1. Implement it in `src/engine/sources/` with: a `load()` that works from a
