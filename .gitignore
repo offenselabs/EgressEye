@@ -8,3 +8,4 @@ Thumbs.db
 .egress-eye/
 coverage/
 .auto/
+*.hosts.json
