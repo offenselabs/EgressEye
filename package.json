@@ -20,7 +20,7 @@
   "homepage": "https://github.com/offenselabs/EgressEye#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/",
+    "test": "npm run build && node --test dist/test",
     "eval": "npm run build && node dist/eval/run.js",
     "doctor": "npm run build && node dist/cli.js doctor",
     "prepare": "npm run build"
