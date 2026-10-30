@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EgressEye — per-session egress visibility for AI coding agents</title>
+  <meta name="description" content="Know what your AI coding agent does with the network. Every external URL and secret its tool calls try to send — with verdicts, reasons, and sources. Report-first, local-first, zero dependencies.">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%230a0e14' stroke='%23f85149' stroke-width='2'/%3E%3Ccircle cx='8' cy='8' r='2' fill='%23f85149'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="wordmark" href="/"><span class="dot">●</span> egress-eye</a>
+    <nav class="topnav">
+      <a href="/threat-model.html">Threat model</a>
+      <a href="/limits.html">Limits</a>
+      <a class="nav-gh" href="https://github.com/offenselabs/EgressEye">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+
+    <section class="hero" style="border-top:none;">
+      <div class="overline">Per-session egress visibility for AI coding agents</div>
+      <h1>Know what your agent does with the network<span class="q">.</span></h1>
+      <p class="lede">
+        AI coding agents run shell commands, fetch pages, and install packages on your
+        machine. If one is tricked — by instructions hidden in a page or repository it
+        reads — it can quietly call attacker-controlled servers or send your
+        <strong>.env</strong> and your tokens somewhere you never intended.
+        EgressEye sits in your harness and answers one question after every tool call.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#quickstart">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/offenselabs/EgressEye">GitHub ↗</a>
+      </div>
+
+      <div class="term" role="img" aria-label="Sample EgressEye session report in a terminal window">
+        <div class="term-bar"><i></i><i></i><i></i><span>egress-eye report — session 20261028-2359-1a2b</span></div>
+        <div class="term-body">
+<span class="hd">EgressEye — session 20261028-2359-1a2b</span>
+Tool calls inspected: <span class="c-green">3</span>
+<span class="c-red">3 URLs contacted — 1 flagged (malicious 1, suspicious 0) — 1 unknown — 1 allowlisted — 1 secret finding</span>
+
+<span class="c-red">MALICIOUS</span>  http://stage-logs-collect-9f3.top/gate.php
+           URL · listed in openphish                              <span class="c-dim">(openphish)</span>  <span class="c-dim">1×  Bash</span>
+<span class="c-amber">SECRET</span>     DB_H…(8 chars)
+           Text contains 4 UPPER_SNAKE= assignments — looks like…  <span class="c-dim">1×  Bash</span>
+<span class="c-dim">unknown</span>    https://telemetry-ingest-9d3.example/beacon
+           No signals — not in known-malicious feeds, no heurist…  <span class="c-dim">(none)</span>  <span class="c-dim">1×  Bash</span>
+        </div>
+      </div>
+      <p class="sec-sub" style="margin: 18px 0 0; font-size: 14px;">
+        The last row is the point: <em>unknown means unknown.</em> EgressEye never
+        pretends that "not on a blocklist" means safe — that honesty is the product.
+      </p>
+    </section>
+
+    <section id="verdicts">
+      <div class="sec-head"><span class="sec-num">01</span><h2>Verdicts in plain words</h2></div>
+      <div class="verdict-row">
+        <span class="vtag v-malicious">MALICIOUS</span>
+        <div class="vrow-text"><strong>On a blocklist.</strong> The URL or its host appears in a downloaded mirror like OpenPhish or URLhaus — checked entirely in memory, on your machine.</div>
+      </div>
+      <div class="verdict-row">
+        <span class="vtag v-suspicious">suspicious</span>
+        <div class="vrow-text"><strong>A deterministic rule matched.</strong> Lookalike domains (<strong>gihub.com</strong>), punycode tricks, embedded credentials, brand-new domains registered days ago, raw-IP URLs.</div>
+      </div>
+      <div class="verdict-row">
+        <span class="vtag v-clean">clean</span>
+        <div class="vrow-text"><strong>Known-good infrastructure.</strong> The domain is part of a curated allowlist of ~90 development essentials — npm, GitHub, PyPI, and friends.</div>
+      </div>
+      <div class="verdict-row">
+        <span class="vtag v-unknown">unknown</span>
+        <div class="vrow-text"><strong>No signals either way.</strong> We don't guess. This is the honest default — and the reason session-level patterns matter more than verdicts alone.</div>
+      </div>
+    </section>
+
+    <section id="catches">
+      <div class="sec-head"><span class="sec-num">02</span><h2>What it catches</h2></div>
+      <p class="sec-sub">Inspection happens before every tool call, on everything the harness sends: commands, tool arguments, file contents the agent writes.</p>
+      <div class="catch-grid">
+        <div><strong>Known-malicious URLs</strong> — including defanged ones like <code style="font-family:var(--mono);font-size:13px;">hxxp://evil[.]top</code> hidden in scripts the agent writes</div>
+        <div><strong>Lookalike domains</strong> — typosquats, punycode, homoglyphs, raw IP literals</div>
+        <div><strong>Throwaway infrastructure</strong> — domains registered days ago, found via RDAP</div>
+        <div><strong>Credentials in tool calls</strong> — AWS/GitHub/OpenAI/Slack tokens, JWTs, private keys, connection strings, pasted .env files — always redacted on disk</div>
+        <div><strong>Sharded exfiltration</strong> — many small sends to the same host aggregate into one finding that per-request tools structurally miss</div>
+        <div><strong>Failed attempts too</strong> — post-tool-use failures are recorded; a blocked exfil try is still signal</div>
+      </div>
+    </section>
+
+    <section id="limits">
+      <div class="sec-head"><span class="sec-num">03</span><h2>Honest limits</h2></div>
+      <div class="limits-callout">
+        <div class="big">EgressEye is a visibility tool, not a sandbox.</div>
+        <p>A determined compromised agent can bypass hooks. Unknown URLs with no signals stay <em>unknown</em>. Anything that never passes through a tool call — raw sockets, other processes — is invisible to any hook-based tool.</p>
+        <p>We publish the complete bypass list instead of hiding it. A security tool that hides its limits is marketing, not security.</p>
+        <a href="/limits.html">Read the full bypass table →</a>
+      </div>
+    </section>
+
+    <section id="privacy">
+      <div class="sec-head"><span class="sec-num">04</span><h2>What leaves your machine</h2></div>
+      <p class="sec-sub">EgressEye is local-first by design — and so is this website: no JavaScript, no analytics, no third-party requests.</p>
+      <table class="ptable">
+        <tr><th>Data</th><th>Where it goes</th><th>Default</th></tr>
+        <tr><td>Blocklist checks</td><td>In memory, against a downloaded mirror — looked-up URLs never leave the machine</td><td class="ok">local</td></tr>
+        <tr><td>URLs on disk</td><td>Query-stripped session log under <span style="font-family:var(--mono)">~/.egress-eye/</span></td><td class="ok">local</td></tr>
+        <tr><td>Secrets</td><td>Redacted at creation: 4-character preview + length, nothing more</td><td class="ok">local</td></tr>
+        <tr><td>Domain age</td><td>RDAP registrar queries for a looked-up URL's registrable domain</td><td class="opt">opt-out</td></tr>
+        <tr><td>Google Safe Browsing</td><td>Looked-up URLs are sent to Google</td><td class="opt">opt-in</td></tr>
+      </table>
+    </section>
+
+    <section id="adapters">
+      <div class="sec-head"><span class="sec-num">05</span><h2>One engine, five harnesses</h2></div>
+      <p class="sec-sub">Each adapter drives the same detection engine; install is one command after a clone.</p>
+      <div class="adapter-grid">
+        <div class="adapter"><div class="name">ZCode <em>· full fidelity</em></div><code>egress-eye init zcode</code></div>
+        <div class="adapter"><div class="name">Claude Code</div><code>egress-eye init claude-code</code></div>
+        <div class="adapter"><div class="name">Codex <em>· Windows-safe deny</em></div><code>egress-eye init codex</code></div>
+        <div class="adapter"><div class="name">Hermes (Nous Research)</div><code>egress-eye init hermes</code></div>
+        <div class="adapter"><div class="name">OpenCode</div><code>egress-eye init opencode</code></div>
+        <div class="adapter"><div class="name">DeepSeek Harness <em>· researched</em></div><code>feasibility doc in /docs</code></div>
+      </div>
+    </section>
+
+    <section id="quickstart" style="border-top:none; padding-bottom: 20px;">
+      <div class="sec-head"><span class="sec-num">06</span><h2>Get started</h2></div>
+      <div class="quickstart term">
+        <div class="term-bar"><i></i><i></i><i></i><span>bash — three commands, then work normally</span></div>
+        <div class="term-body"><span class="prompt">$</span> git clone https://github.com/offenselabs/EgressEye && cd EgressEye
+<span class="prompt">$</span> npm install && node dist/cli.js init zcode   <span class="c-d"># pick your harness</span>
+<span class="prompt">$</span> node dist/cli.js update-feeds                <span class="c-d"># mirror the blocklist once</span>
+<span class="c-d"># … use your agent normally …</span>
+<span class="prompt">$</span> node dist/cli.js report --last               <span class="c-d"># see what happened</span></div>
+      </div>
+      <p class="sec-sub" style="margin-top:16px;">
+        Requires Node 20+. Report-only by default — it never blocks unless you set
+        <code style="font-family:var(--mono);color:var(--amber);">EGRESS_EYE_BLOCK=1</code>, and then only on feed-confirmed hits.
+        Under the hood: zero runtime dependencies, 70/70 unit tests, a 39-scenario
+        eval corpus, CI on Linux and Windows.
+      </p>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap foot-row">
+    <div>
+      <span class="zero">No cookies. No trackers. Static pages.</span><br>
+      <span style="font-size:11px;">Cloudflare may inject its cookieless Web Analytics beacon into served pages — that is Cloudflare's, not ours.</span>
+    </div>
+    <div>
+      <a href="https://github.com/offenselabs/EgressEye">GitHub</a> ·
+      <a href="https://github.com/offenselabs/EgressEye/issues">Issues</a> ·
+      <a href="https://github.com/offenselabs/EgressEye/releases">Releases</a> ·
+      MIT
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
