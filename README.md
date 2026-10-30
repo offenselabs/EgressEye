@@ -5,6 +5,10 @@
 [![CI](https://github.com/offenselabs/EgressEye/actions/workflows/ci.yml/badge.svg)](https://github.com/offenselabs/EgressEye/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **Scope of this repo:** the product only — CLI, detection engine, harness adapters.
+> The project website ([egresseye.offensivelabs.tech](https://egresseye.offensivelabs.tech))
+> is maintained separately in the offensivelabs-website repository (branch `egress`).
+
 AI coding agents (Claude Code, Codex, ZCode, Hermes, OpenCode, …) run shell
 commands, fetch web pages, and install packages on your machine. If an agent
 is tricked — for example by instructions hidden in a web page or repository it

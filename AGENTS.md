@@ -4,6 +4,11 @@ This is EgressEye: per-session egress visibility for AI coding agents.
 Read `docs/threat-model.md` and `docs/limits.md` before changing detection
 logic — the honesty rules there are the product.
 
+Scope: **this repo is the product only** (CLI, detection engine, harness
+adapters, tests). The website — egresseye.offensivelabs.tech — lives in the
+offensivelabs-website repository, branch `egress`. No site code, brand
+assets, or site deploy workflows belong here.
+
 Hard rules:
 
 - **Zero runtime dependencies** (Node builtins only). Dev deps: TypeScript only.
