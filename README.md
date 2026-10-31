@@ -10,33 +10,27 @@
 > is maintained separately in the offensivelabs-website repository (branch `egress`).
 
 AI coding agents (Claude Code, Codex, ZCode, Hermes, OpenCode, …) run shell
-commands, fetch web pages, and install packages on your machine. If an agent
-is tricked — for example by instructions hidden in a web page or repository it
-reads — it can quietly contact attacker-controlled servers or send your
-`.env` file, API tokens, or source code somewhere you never intended.
+commands, fetch web pages, and install packages on the machine they run on. An
+agent that is tricked — for example by instructions hidden in a web page or
+repository it reads — can quietly contact attacker-controlled servers or send
+`.env` files, API tokens, or source code to unintended destinations.
 
-EgressEye sits inside your agent harness and answers one question after every
-tool call:
+EgressEye hooks into the agent harness and, after every tool call, records
+what the session contacted, what looked wrong, and why — with a verdict, a
+human-readable reason, and the source that justified it. No proxy, no
+configuration files. Report-only by default.
 
-> **What did this session contact, what looked wrong, and why?**
+## Use cases
 
-No configuration files to write, no proxy to set up, nothing to babysit.
+- Outbound-activity visibility for agents in daily use
+- Runtime visibility for open-weight / locally hosted models, where agent
+  behavior cannot be inferred from the weights
+- Per-session reports readable by humans: every URL and secret material a
+  tool call tried to send, with a verdict and the evidence behind it
 
----
+## Example output
 
-## Is this for me?
-
-- You use an AI coding agent day to day and want to *see* its outbound
-  activity — not just hope it's fine.
-- You run open-weight / locally hosted models and want runtime visibility
-  (you can't know what a model will do just by looking at its weights).
-- You want a report you can actually read: every URL and secret material a
-  tool call tried to send, with a verdict, a reason, and the source that
-  justified it.
-
-## See it in one minute
-
-After a normal working session, run `egress-eye report --last`:
+After a working session, `egress-eye report --last` prints:
 
 ```
 EgressEye — session 20261028-2359-1a2b
@@ -50,30 +44,32 @@ SECRET     DB_H…(8 chars)                               Text contains 4 UPPER_
 unknown    https://telemetry-ingest-9d3.example/beacon  No signals — not in known-malicious feeds, …     1×    Bash
 ```
 
-Notice the last row: EgressEye does **not** pretend that "not on a blocklist"
-means "safe". Unknown means unknown — that honesty is the product.
+A URL with no signals is reported as `unknown`. Absence from a blocklist is
+never reported as safe.
 
 ## Getting started
 
-You need [Node.js](https://nodejs.org) 20 or newer. Then, from a clone of
-this repository:
+Requires [Node.js](https://nodejs.org) 20 or newer. From a clone of this
+repository:
 
 ```bash
-npm install                      # builds the tool (TypeScript, dev deps only)
+npm install                      # builds the tool (TypeScript is the only dev dependency)
 
-node dist/cli.js init zcode      # wire the hooks into your harness (see adapters below)
+node dist/cli.js init zcode      # wire the hooks into a harness (see Harness support)
 node dist/cli.js update-feeds    # download the blocklist mirror once
 
-# … use your agent normally …
-node dist/cli.js report --last   # see what happened
-node dist/cli.js doctor          # check that everything is wired correctly
+# use the agent as usual
+
+node dist/cli.js report --last   # summarize the last session
+node dist/cli.js doctor          # verify the installation end to end
 ```
 
-That's it. Hooks load when you start your next agent session. Everything is
-report-only by default — EgressEye observes; it never blocks unless you ask
-it to.
+Hooks load on the next agent session. EgressEye observes tool calls and never
+blocks unless explicitly enabled.
 
-**Try it right now, without installing anything:**
+### Quick scan
+
+A single command can be scanned without wiring any harness:
 
 ```bash
 node dist/cli.js scan 'curl https://example.com'
@@ -91,56 +87,56 @@ your agent (Bash, WebFetch, …)
    └─ when the session ends, EgressEye prints the summary report
 ```
 
-Every verdict comes with a **source** and a **reason**, so you can judge it:
+Every verdict carries a **source** and a **reason**:
 
-| Verdict | Meaning in plain words |
+| Verdict | Meaning |
 |---|---|
 | `malicious` | The URL (or its host) is on a blocklist like OpenPhish or URLhaus. |
 | `suspicious` | A deterministic rule matched — e.g. the domain is a near-copy of `github.com`, the URL embeds credentials, the domain was registered days ago. |
 | `clean` | The domain is a well-known, verified part of development infrastructure (`npmjs.org`, `github.com`, …). |
-| `unknown` | No signals either way. We don't guess. |
+| `unknown` | No signals either way. |
 
 Secret findings (API keys, tokens, `.env` contents passing through tool
 calls) are always **redacted**: only a 4-character preview and the length are
 ever stored.
 
-### What it catches
+### Detection coverage
 
-- Fetches of known-phishing/malware URLs — including defanged ones
+- Fetches of known-phishing/malware URLs, including defanged variants
   (`hxxp://evil[.]com`) hidden in scripts the agent writes
-- Lookalike/typosquatted domains (`gihub.com`), punycode tricks, raw IP URLs
-- Brand-new domains (registered days ago — classic throwaway exfil infra)
+- Lookalike/typosquatted domains (`gihub.com`), punycode tricks, raw-IP URLs
+- Recently registered domains (days old — typical throwaway exfiltration
+  infrastructure)
 - Credentials and tokens in tool calls: AWS/GitHub/OpenAI/Slack/Google
   tokens, JWTs, private keys, database connection strings, pasted `.env`
   files
 - **Sharded exfiltration** — many small sends to the same low-reputation
-  host get aggregated into one finding that per-request tools structurally
-  miss
+  host are aggregated into one finding that per-request tools miss
 
-## Honest limits (please read)
+## Limitations
 
-EgressEye is a **visibility tool, not a sandbox**. A determined compromised
-agent can bypass hooks; unknown URLs with no signals stay `unknown`; things
-that never pass through a tool call (raw sockets, other processes) are
-invisible to any hook-based tool. Read [docs/limits.md](docs/limits.md) for
-the complete bypass list and [docs/threat-model.md](docs/threat-model.md) for
-what this defends against. Want hard blocking? Set `EGRESS_EYE_BLOCK=1` —
-but it only ever blocks feed-confirmed malicious calls, and it's still not a
-security boundary.
+EgressEye is a **visibility tool, not a sandbox**. Hooks can be bypassed by a
+compromised agent; unknown URLs with no signals remain `unknown`; activity
+that never passes through a tool call (raw sockets, other processes) is
+invisible to hook-based tooling. See [docs/limits.md](docs/limits.md) for the
+complete bypass list and [docs/threat-model.md](docs/threat-model.md) for the
+attacker model.
+
+Optional blocking: set `EGRESS_EYE_BLOCK=1` to block feed-confirmed
+malicious tool calls. This is not a security boundary.
 
 ## Privacy
 
 - Feed checks run in memory against a downloaded mirror — looked-up URLs do
-  **not** leave your machine for feed checks.
+  **not** leave the machine for feed checks.
 - URLs are stored **query-stripped** (no tracking parameters on disk).
 - Secrets are redacted at creation; tool inputs are never stored.
 - By default, the only outbound traffic is the blocklist download itself and
   RDAP registrar lookups for a URL's registrable domain (disable with
-  `EGRESS_EYE_RDAP=0`; everything with `EGRESS_EYE_OFFLINE=1`).
+  `EGRESS_EYE_RDAP=0`; disable everything with `EGRESS_EYE_OFFLINE=1`).
 - Google Safe Browsing is strictly opt-in (it sends looked-up URLs to
   Google).
-- Zero runtime dependencies — Node builtins only. A security tool should not
-  be a supply-chain risk.
+- Zero runtime dependencies — Node builtins only.
 
 ## Harness support
 
@@ -158,7 +154,7 @@ for contract details and harness-specific caveats. Marketplace/plugin
 manifests reference `dist/`, which is not committed — build first, or grab
 the `dist` zip attached to each release.
 
-## For contributors
+## Development
 
 - `npm test` — 70 unit tests (`node --test`, fully offline)
 - `npm run eval` — 39-scenario labeled corpus replayed through the real hook
