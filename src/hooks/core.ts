@@ -2,6 +2,7 @@ import { extractUrls } from "../engine/extract.js";
 import { judgeUrl, Judgement, JudgeOptions } from "../engine/verdict.js";
 import { SecretFinding, scanSecrets } from "../engine/secrets.js";
 import { MirrorFeed } from "../engine/sources/feeds.js";
+import { Deadline } from "../lib/budget.js";
 import { SessionEvent, appendEvents, currentSessionId } from "../store/session.js";
 
 /**
@@ -30,10 +31,10 @@ export interface ProcessResult {
 let feedPromise: Promise<MirrorFeed> | null = null;
 
 /** Lazily open the mirror feed once per process. */
-export function getFeed(): Promise<MirrorFeed> {
+export function getFeed(deadline?: Deadline): Promise<MirrorFeed> {
   if (!feedPromise) {
     const feed = MirrorFeed.open();
-    feedPromise = feed.load().then(() => feed);
+    feedPromise = feed.load(false, deadline).then(() => feed);
   }
   return feedPromise;
 }
@@ -68,11 +69,12 @@ export async function processToolCall(call: ToolCallInput, opts: ProcessOptions 
   // One-shot checks (scan) must not create or rotate the pointer session.
   const sessionId = persist ? currentSessionId(call.sessionId ?? null) : call.sessionId ?? "";
 
-  const feed = opts.urlhaus !== null ? (opts.urlhaus ?? (await getFeed())) : null;
+  const feed = opts.urlhaus !== null ? (opts.urlhaus ?? (await getFeed(opts.budget))) : null;
   const judgeOpts: JudgeOptions = {
     urlhaus: feed,
     rdap: opts.rdap,
     gsb: opts.gsb,
+    budget: opts.budget,
   };
 
   const urls = extractUrls(text);

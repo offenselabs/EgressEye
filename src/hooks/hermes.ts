@@ -1,9 +1,10 @@
 import { processToolCall } from "./core.js";
 import { rotateSession, summarizeSession, currentSessionId } from "../store/session.js";
 import { renderSummary, headlineLine } from "../report/render.js";
-import { dataDir, ensureDir, sanitizeSessionId } from "../lib/paths.js";
+import { dataDir, sanitizeSessionId } from "../lib/paths.js";
+import { HookBudget, Deadline } from "../lib/budget.js";
+import { writeFileAtomic } from "../lib/fsx.js";
 import { readStdin, parseHookJson } from "./stdin.js";
-import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -21,19 +22,25 @@ import { pathToFileURL } from "node:url";
 export type HermesDecision = { action: "block"; message: string } | null;
 
 /** pre_tool_call payload: {tool_name, args, task_id}. Returns a veto or null. */
-export async function hermesPreToolCall(payload: {
-  tool_name?: unknown;
-  args?: unknown;
-  task_id?: unknown;
-}): Promise<HermesDecision> {
+export async function hermesPreToolCall(
+  payload: {
+    tool_name?: unknown;
+    args?: unknown;
+    task_id?: unknown;
+  },
+  budget?: Deadline,
+): Promise<HermesDecision> {
   const tool = String(payload.tool_name ?? "unknown");
   const sessionId = sanitizeSessionId(String(payload.task_id ?? "")) || null;
-  const result = await processToolCall({
-    event: "pre-tool-use",
-    tool,
-    input: payload.args ?? {},
-    sessionId,
-  });
+  const result = await processToolCall(
+    {
+      event: "pre-tool-use",
+      tool,
+      input: payload.args ?? {},
+      sessionId,
+    },
+    { budget },
+  );
   if (process.env.EGRESS_EYE_BLOCK === "1") {
     const malicious = result.judgements.filter((j) => j.verdict === "malicious");
     if (malicious.length > 0) {
@@ -47,13 +54,13 @@ export async function hermesPreToolCall(payload: {
 }
 
 /** Session-level events: session-start (rotate), session-end / stop (report). */
-export async function runHermesEvent(event: string, payload: Record<string, unknown>): Promise<string> {
+export async function runHermesEvent(event: string, payload: Record<string, unknown>, budget?: Deadline): Promise<string> {
   if (event === "session-start") {
     rotateSession();
     return "";
   }
   if (event === "pre-tool-use") {
-    const decision = await hermesPreToolCall(payload);
+    const decision = await hermesPreToolCall(payload, budget);
     return decision ? JSON.stringify(decision) : "";
   }
   if (event === "session-end" || event === "stop") {
@@ -62,8 +69,7 @@ export async function runHermesEvent(event: string, payload: Record<string, unkn
       sanitizeSessionId(String(payload.task_id ?? "")) ??
       currentSessionId(null);
     const summary = summarizeSession(id);
-    ensureDir(dataDir());
-    fs.writeFileSync(path.join(dataDir(), "last-report.txt"), renderSummary(summary, { color: false }), "utf8");
+    writeFileAtomic(path.join(dataDir(), "last-report.txt"), renderSummary(summary, { color: false }));
     process.stderr.write(`[egress-eye] ${headlineLine(summary)}\n`);
     return "";
   }
@@ -71,10 +77,12 @@ export async function runHermesEvent(event: string, payload: Record<string, unkn
 }
 
 async function main(): Promise<number> {
+  // The budget starts before the stdin read so the harness-side wait counts.
+  const budget = HookBudget.fromEnv();
   const event = process.argv[2] ?? "";
   const raw = await readStdin();
   const payload = parseHookJson(raw);
-  const out = await runHermesEvent(event, payload);
+  const out = await runHermesEvent(event, payload, budget);
   if (out) process.stdout.write(out + "\n");
   return 0;
 }

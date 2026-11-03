@@ -45,8 +45,11 @@ feed-confirmed hits for that reason.
 - RDAP lookups are budgeted (3 fresh lookups per hook run) and cached 30 days;
   domains behind unsupported TLDs return "unknown age".
 - Hooks run inline before every tool call: typical cost is tens of
-  milliseconds; worst case adds a feed refresh (~seconds, once a day) or up to
-  3 RDAP queries.
+  milliseconds. A whole-hook wall-clock budget (`EGRESS_EYE_HOOK_BUDGET_MS`,
+  default 8000; `0` disables) bounds the worst case — a cold feed refresh
+  plus Safe Browsing/RDAP lookups — and a stage that no longer fits the
+  budget is skipped with an honest note; the hook still finishes in time and
+  never breaks the session.
 - Two concurrent agent sessions share `current-session.json` only when the
   harness does not provide a session id; prefer adapters that pass one.
 - Windows is the primary development target; nothing is OS-specific in the

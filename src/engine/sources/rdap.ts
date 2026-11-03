@@ -1,6 +1,7 @@
 import { JsonTtlCache } from "../cache.js";
 import { cacheDir, ensureDir } from "../../lib/paths.js";
 import { fetchWithTimeout, isOnlineDisabled } from "../../lib/net.js";
+import { boundedTimeoutMs, Deadline } from "../../lib/budget.js";
 
 /**
  * Newly-registered-domain detection via RDAP (rdap.org bootstrap redirect).
@@ -36,7 +37,7 @@ export function rdapDisabled(): boolean {
 let freshLookups = 0;
 
 /** Registration age in days for a registrable domain, cached and budgeted. */
-export async function domainAge(regDomain: string): Promise<DomainAge> {
+export async function domainAge(regDomain: string, deadline?: Deadline): Promise<DomainAge> {
   if (rdapDisabled()) return { days: null, note: "rdap-disabled" };
 
   const c = cacheFor();
@@ -48,10 +49,14 @@ export async function domainAge(regDomain: string): Promise<DomainAge> {
   if (freshLookups >= budget()) {
     return { days: null, note: "rdap-budget-exhausted" };
   }
+  const timeoutMs = boundedTimeoutMs(deadline, 4000);
+  if (timeoutMs <= 0) {
+    return { days: null, note: "wall-clock-budget" };
+  }
   freshLookups++;
 
   try {
-    const res = await fetchWithTimeout(`https://rdap.org/domain/${encodeURIComponent(regDomain)}`, { timeoutMs: 4000 });
+    const res = await fetchWithTimeout(`https://rdap.org/domain/${encodeURIComponent(regDomain)}`, { timeoutMs });
     if (!res.ok) {
       const miss: DomainAge = { days: null, note: `rdap-http-${res.status}` };
       c.set(`rdap:${regDomain}`, miss, TTL_UNKNOWN_MS);

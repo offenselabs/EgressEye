@@ -1,9 +1,10 @@
 import { processToolCall } from "./core.js";
 import { summarizeSession, currentSessionId, rotateSession } from "../store/session.js";
 import { renderSummary, headlineLine } from "../report/render.js";
-import { dataDir, ensureDir, sanitizeSessionId } from "../lib/paths.js";
+import { dataDir, sanitizeSessionId } from "../lib/paths.js";
+import { HookBudget, Deadline } from "../lib/budget.js";
+import { writeFileAtomic } from "../lib/fsx.js";
 import { readStdin, parseHookJson } from "./stdin.js";
-import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -17,6 +18,9 @@ import { pathToFileURL } from "node:url";
  *     {"additionalContext": …} key, and only for the Stop event when
  *     EGRESS_EYE_ANNOUNCE is not "0"
  *   - a monitoring hook must never break a session: unexpected errors exit 0
+ *   - work is bounded by a wall-clock budget (EGRESS_EYE_HOOK_BUDGET_MS,
+ *     default 8000): expired stages degrade to honest notes, the hook still
+ *     finishes in time
  */
 
 function pick(obj: Record<string, unknown>, ...keys: string[]): unknown {
@@ -27,7 +31,8 @@ function pick(obj: Record<string, unknown>, ...keys: string[]): unknown {
 }
 
 /** Handle one hook event. Returns the process exit code (0 pass, 2 deny). */
-export async function runHook(event: string, sessionArg: string | null, rawStdin: string): Promise<number> {
+export async function runHook(event: string, sessionArg: string | null, rawStdin: string, budgetArg?: Deadline): Promise<number> {
+  const budget = budgetArg ?? HookBudget.fromEnv();
   const stdinJson = parseHookJson(rawStdin);
   if (event === "session-start") {
     rotateSession();
@@ -40,7 +45,7 @@ export async function runHook(event: string, sessionArg: string | null, rawStdin
     // Adapters that cannot pass the session id as argv (Claude Code, Codex)
     // put it in the stdin payload instead.
     const session = sessionArg ?? sanitizeSessionId(String(pick(stdinJson, "session_id", "sessionId") ?? ""));
-    const result = await processToolCall({ event, tool, input, sessionId: session });
+    const result = await processToolCall({ event, tool, input, sessionId: session }, { budget });
 
     if (event === "pre-tool-use" && process.env.EGRESS_EYE_BLOCK === "1") {
       const malicious = result.judgements.filter((j) => j.verdict === "malicious");
@@ -71,8 +76,7 @@ export async function runHook(event: string, sessionArg: string | null, rawStdin
   if (event === "stop" || event === "session-end") {
     const id = sessionArg ?? sanitizeSessionId(String(pick(stdinJson, "session_id", "sessionId") ?? "")) ?? currentSessionId(null);
     const summary = summarizeSession(id);
-    ensureDir(dataDir());
-    fs.writeFileSync(path.join(dataDir(), "last-report.txt"), renderSummary(summary, { color: false }), "utf8");
+    writeFileAtomic(path.join(dataDir(), "last-report.txt"), renderSummary(summary, { color: false }));
     // stderr goes to the ZCode log — visible without touching the conversation.
     process.stderr.write(`[egress-eye] ${headlineLine(summary)}\n`);
     if (process.env.EGRESS_EYE_ANNOUNCE !== "0") {
@@ -87,10 +91,12 @@ export async function runHook(event: string, sessionArg: string | null, rawStdin
 }
 
 async function main(): Promise<number> {
+  // The budget starts before the stdin read so the harness-side wait counts.
+  const budget = HookBudget.fromEnv();
   const event = process.argv[2] ?? "";
   const sessionArg = sanitizeSessionId(process.argv[3]);
   const raw = await readStdin();
-  return runHook(event, sessionArg, raw);
+  return runHook(event, sessionArg, raw, budget);
 }
 
 // Auto-run only when this file is the process entry point (i.e. invoked as a

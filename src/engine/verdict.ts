@@ -4,6 +4,7 @@ import { isAllowlistedHost, registrableDomain } from "./allowlist.js";
 import { MirrorFeed } from "./sources/feeds.js";
 import { gsbEnabled, gsbLookup } from "./sources/safebrowsing.js";
 import { domainAge, DomainAge } from "./sources/rdap.js";
+import { Deadline } from "../lib/budget.js";
 
 /**
  * The verdict pipeline. Deterministic sources first (local feed → GSB →
@@ -35,7 +36,11 @@ export interface JudgeOptions {
   /** Set false to skip Google Safe Browsing even when a key is present. */
   gsb?: boolean;
   /** Injectable for tests; defaults to the real RDAP lookup. */
-  rdapFn?: (regDomain: string) => Promise<DomainAge>;
+  rdapFn?: (regDomain: string, deadline?: Deadline) => Promise<DomainAge>;
+  /** Injectable for tests; defaults to the real Safe Browsing lookup. */
+  gsbFn?: (urls: string[], deadline?: Deadline) => Promise<Map<string, string>>;
+  /** Whole-hook wall-clock budget; expired network stages are skipped. */
+  budget?: Deadline;
 }
 
 function combineReason(findings: Finding[]): string {
@@ -74,8 +79,8 @@ export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promis
 
   // 2. Google Safe Browsing (only when the user configured a key). The
   // query-stripped form is sent and cached — see README privacy principle.
-  if ((opts.gsb ?? true) && gsbEnabled()) {
-    const matches = await gsbLookup([u.url]);
+  if ((opts.gsb ?? true) && gsbEnabled() && !opts.budget?.expired()) {
+    const matches = await (opts.gsbFn ?? gsbLookup)([u.url], opts.budget);
     const threat = matches.get(u.url);
     if (threat) return mk("malicious", "google-safe-browsing", `Listed by Google Safe Browsing (${threat})`);
   }
@@ -97,9 +102,9 @@ export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promis
   }
 
   // 5. Newly-registered-domain check via RDAP.
-  if (opts.rdap ?? true) {
+  if ((opts.rdap ?? true) && !opts.budget?.expired()) {
     const lookup = opts.rdapFn ?? domainAge;
-    const age = await lookup(registrableDomain(u.host));
+    const age = await lookup(registrableDomain(u.host), opts.budget);
     if (age.days !== null) {
       if (age.days < 7) {
         return mk("suspicious", "rdap", `Domain registered only ${age.days} days ago (very new)`, findings);

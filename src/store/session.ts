@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Verdict } from "../engine/verdict.js";
 import { dataDir, ensureDir, sanitizeSessionId, sessionsDir } from "../lib/paths.js";
+import { writeFileAtomic } from "../lib/fsx.js";
 
 export type { Verdict };
 
@@ -49,7 +50,7 @@ export function makeSessionId(): string {
 export function rotateSession(): string {
   const id = makeSessionId();
   ensureDir(dataDir());
-  fs.writeFileSync(pointerFile(), JSON.stringify({ id, startedAt: new Date().toISOString() } satisfies Pointer), "utf8");
+  writeFileAtomic(pointerFile(), JSON.stringify({ id, startedAt: new Date().toISOString() } satisfies Pointer));
   return id;
 }
 
