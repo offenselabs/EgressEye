@@ -1,6 +1,7 @@
 import { JsonTtlCache } from "../cache.js";
 import { cacheDir, ensureDir } from "../../lib/paths.js";
 import { fetchWithTimeout, isOnlineDisabled } from "../../lib/net.js";
+import { boundedTimeoutMs, Deadline } from "../../lib/budget.js";
 
 /**
  * Google Safe Browsing (optional). Only used when EGRESS_EYE_GSB_KEY is set —
@@ -25,7 +26,7 @@ function cacheFor(): JsonTtlCache {
 }
 
 /** Look up full URLs; returns a map of url → threatType for matches only. */
-export async function gsbLookup(urls: string[]): Promise<Map<string, string>> {
+export async function gsbLookup(urls: string[], deadline?: Deadline): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   if (!gsbEnabled() || urls.length === 0) return result;
   const key = process.env.EGRESS_EYE_GSB_KEY as string;
@@ -42,6 +43,9 @@ export async function gsbLookup(urls: string[]): Promise<Map<string, string>> {
   }
   if (uncached.length === 0) return result;
 
+  const timeoutMs = boundedTimeoutMs(deadline, 6000);
+  if (timeoutMs <= 0) return result;
+
   try {
     const body = {
       client: { clientId: "egress-eye", clientVersion: "0.1.0" },
@@ -56,7 +60,7 @@ export async function gsbLookup(urls: string[]): Promise<Map<string, string>> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      timeoutMs: 6000,
+      timeoutMs,
     });
     if (!res.ok) return result;
     const json = (await res.json()) as { matches?: Array<{ threat: { url: string }; threatType: string }> };

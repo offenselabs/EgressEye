@@ -76,6 +76,27 @@ node dist/cli.js scan 'curl https://example.com'
 node dist/cli.js scan 'export TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234'
 ```
 
+Hook work is bounded by a wall-clock budget (`EGRESS_EYE_HOOK_BUDGET_MS`,
+default 8000, `0` disables) so a cold blocklist refresh can never outlive the
+harness timeout. `update-feeds` never writes a feed file pinned through
+`EGRESS_EYE_FEED_FILE` — pinned files are treated as read-only.
+
+### Keyed sources
+
+The keyless default (OpenPhish community feed) holds only ~300 recent entries,
+so per-host coverage decays within days. Larger lists are available behind
+keys:
+
+```bash
+export EGRESS_EYE_URLHAUS_AUTH_KEY=…   # abuse.ch URLhaus: recent malware URLs
+export EGRESS_EYE_GSB_KEY=…            # Google Safe Browsing (sends looked-up URLs to Google)
+```
+
+`EGRESS_EYE_URLHAUS_AUTH_KEY` enables the `urlhaus` source
+(`EGRESS_EYE_FEED_SOURCE=urlhaus`). `EGRESS_EYE_GSB_KEY` adds Safe Browsing
+lookups on top of the mirror. Both are optional; `doctor` reports which are
+active and warns when the mirror is small.
+
 ## How it works
 
 ```

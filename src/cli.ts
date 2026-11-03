@@ -51,8 +51,11 @@ Environment:
   EGRESS_EYE_ANNOUNCE=0        stop injecting the session summary into the conversation
   EGRESS_EYE_REPEAT_THRESHOLD  distinct-URL contacts per host before the sharded-egress
                                aggregate fires (default 5)
+  EGRESS_EYE_HOOK_BUDGET_MS    whole-hook wall-clock budget in ms (default 8000; 0 disables) —
+                               expired stages are skipped with an honest note, never mid-flight
   EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus
-  EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt)
+  EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt);
+                               read-only — update-feeds never writes a pinned feed file
   EGRESS_EYE_URLHAUS_AUTH_KEY  abuse.ch auth key (only for EGRESS_EYE_FEED_SOURCE=urlhaus)
   EGRESS_EYE_GSB_KEY           Google Safe Browsing API key (optional; sends URLs to Google)
   EGRESS_EYE_RDAP=0            disable newly-registered-domain lookups
@@ -148,6 +151,16 @@ async function cmdScan(args: string[]): Promise<void> {
 }
 
 async function cmdUpdateFeeds(): Promise<void> {
+  // update-feeds refreshes the default mirror only. A pinned file (env var)
+  // belongs to the user — fixtures, custom feeds — and is never overwritten.
+  const pinEnv = process.env.EGRESS_EYE_FEED_FILE
+    ? "EGRESS_EYE_FEED_FILE"
+    : process.env.EGRESS_EYE_URLHAUS_FILE
+      ? "EGRESS_EYE_URLHAUS_FILE"
+      : null;
+  if (pinEnv) {
+    cliError(`${pinEnv} is set — update-feeds only refreshes the default mirror and never writes pinned feed files. Unset it and rerun.`);
+  }
   const feed = MirrorFeed.open();
   process.stdout.write(`Refreshing ${feed.source.name} (${feed.source.url ?? "local file"}) …\n`);
   await feed.load(true);
@@ -655,6 +668,11 @@ async function cmdDoctor(): Promise<void> {
   if (feed.size > 0) {
     const ageH = feed.ageMs / 3600000;
     ok(`${feed.source.name} mirror: ${feed.size} URLs, age ${(feed.ageMs === Infinity ? 0 : ageH).toFixed(1)}h`);
+    if (feed.size < 1000) {
+      warn(
+        `mirror holds only ${feed.size} entries — the community feed is a ~300-entry rolling window, so per-host coverage decays within days; keyed sources (EGRESS_EYE_URLHAUS_AUTH_KEY, EGRESS_EYE_GSB_KEY) carry far larger lists`,
+      );
+    }
     if (ageH > 48) warn("feed is stale — run `egress-eye update-feeds`");
   } else {
     warn(`no local feed (${feed.note || "run `egress-eye update-feeds`"})`);

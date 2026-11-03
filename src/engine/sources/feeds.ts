@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { feedsDir, ensureDir } from "../../lib/paths.js";
 import { fetchWithTimeout, isOnlineDisabled } from "../../lib/net.js";
+import { boundedTimeoutMs, Deadline } from "../../lib/budget.js";
+import { writeFileAtomic } from "../../lib/fsx.js";
 import { parseCsvLine } from "./csv.js";
 
 /**
@@ -68,20 +70,34 @@ export class MirrorFeed {
 
   readonly source: SourceSpec;
   readonly file: string;
+  /**
+   * Env var that pinned this feed file, if any. A pinned file belongs to the
+   * user (fixtures, custom feeds) — EgressEye treats it as read-only and
+   * downloads only ever write the default mirror path.
+   */
+  readonly pinEnv: string | null;
   ageMs = Infinity;
   note = "";
 
-  private constructor(source: SourceSpec, file: string) {
+  private constructor(source: SourceSpec, file: string, pinEnv: string | null) {
     this.source = source;
     this.file = file;
+    this.pinEnv = pinEnv;
   }
 
   static open(opts: { file?: string; source?: string } = {}): MirrorFeed {
     const sourceName = opts.source ?? process.env.EGRESS_EYE_FEED_SOURCE ?? "openphish";
     const source = SOURCES[sourceName] ?? SOURCES["openphish"]!;
+    const pinEnv = opts.file
+      ? null
+      : process.env.EGRESS_EYE_FEED_FILE
+        ? "EGRESS_EYE_FEED_FILE"
+        : process.env.EGRESS_EYE_URLHAUS_FILE
+          ? "EGRESS_EYE_URLHAUS_FILE"
+          : null;
     const file =
       opts.file ?? process.env.EGRESS_EYE_FEED_FILE ?? process.env.EGRESS_EYE_URLHAUS_FILE ?? path.join(feedsDir(), source.file);
-    return new MirrorFeed(source, file);
+    return new MirrorFeed(source, file, pinEnv);
   }
 
   /** Format for a local file: explicit source format, or inferred by extension. */
@@ -93,36 +109,44 @@ export class MirrorFeed {
   }
 
   /** Load the local mirror, downloading a fresh copy when stale or missing. */
-  async load(force = false): Promise<boolean> {
+  async load(force = false, deadline?: Deadline): Promise<boolean> {
     if (this.loaded && !force) return this.urls.size > 0;
     this.loaded = true;
     ensureDir(path.dirname(this.file));
 
     const key = this.source.keyEnv ? process.env[this.source.keyEnv] : undefined;
     let needDownload = force || !fs.existsSync(this.file);
-    const usingExplicitFile = Boolean(process.env.EGRESS_EYE_FEED_FILE || process.env.EGRESS_EYE_URLHAUS_FILE);
+
+    if (needDownload && this.pinEnv) {
+      this.note = `feed file pinned via ${this.pinEnv} — download skipped`;
+      needDownload = false;
+    } else if (!needDownload && !this.pinEnv && fs.existsSync(this.file)) {
+      const stat = fs.statSync(this.file);
+      this.ageMs = Date.now() - stat.mtimeMs;
+      if (this.ageMs > STALE_MS) needDownload = !isOnlineDisabled();
+    }
 
     if (needDownload && this.source.keyEnv && !key) {
       this.note = `source '${this.source.name}' needs ${this.source.keyEnv} to download — set it, or load a local file with EGRESS_EYE_FEED_FILE`;
       needDownload = false;
     }
 
-    if (!needDownload && !usingExplicitFile && fs.existsSync(this.file)) {
-      const stat = fs.statSync(this.file);
-      this.ageMs = Date.now() - stat.mtimeMs;
-      if (this.ageMs > STALE_MS) needDownload = !isOnlineDisabled();
+    // A hook must not spend its whole wall-clock budget on a refresh.
+    if (needDownload && deadline?.expired()) {
+      this.note = "hook wall-clock budget exhausted — feed refresh skipped";
+      needDownload = false;
     }
 
     if (needDownload && !isOnlineDisabled() && this.source.url && !(this.source.keyEnv && !key)) {
       try {
         const res = await fetchWithTimeout(this.source.url, {
-          timeoutMs: 30000,
+          timeoutMs: boundedTimeoutMs(deadline, 30000),
           method: this.source.method ?? "GET",
           headers: key ? { "Auth-Key": key } : undefined,
         });
         if (res.ok) {
           const body = await res.text();
-          fs.writeFileSync(this.file, body, "utf8");
+          writeFileAtomic(this.file, body);
           this.ageMs = 0;
         } else {
           this.note = `feed refresh got HTTP ${res.status} — using local mirror as-is`;

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir } from "../lib/paths.js";
+import { writeFileAtomic } from "../lib/fsx.js";
 
 /**
  * Tiny persistent TTL cache backed by a JSON file. Saves synchronously on
@@ -33,7 +34,7 @@ export class JsonTtlCache {
     }
     const obj: Record<string, unknown> = {};
     for (const [k, entry] of this.data) obj[k] = entry;
-    fs.writeFileSync(this.file, JSON.stringify(obj), "utf8");
+    writeFileAtomic(this.file, JSON.stringify(obj));
   }
 
   get<T>(key: string, maxAgeMs: number): T | null {

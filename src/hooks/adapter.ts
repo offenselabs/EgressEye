@@ -1,6 +1,7 @@
 import { runHook } from "./zcode.js";
 import { readStdin } from "./stdin.js";
 import { sanitizeSessionId } from "../lib/paths.js";
+import { HookBudget } from "../lib/budget.js";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -19,10 +20,12 @@ export function adapterAnnounceDefault(defaultValue: "0" | "1"): void {
 
 export async function runAdapterMain(defaultAnnounce: "0" | "1"): Promise<number> {
   adapterAnnounceDefault(defaultAnnounce);
+  // The budget starts before the stdin read so the harness-side wait counts.
+  const budget = HookBudget.fromEnv();
   const event = process.argv[2] ?? "";
   const sessionArg = sanitizeSessionId(process.argv[3]);
   const raw = await readStdin();
-  return runHook(event, sessionArg, raw);
+  return runHook(event, sessionArg, raw, budget);
 }
 
 /** Auto-run guard: only when this file is the process entry point. */
