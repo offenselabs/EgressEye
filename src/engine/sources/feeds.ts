@@ -4,6 +4,7 @@ import { feedsDir, ensureDir } from "../../lib/paths.js";
 import { fetchWithTimeout, isOnlineDisabled } from "../../lib/net.js";
 import { boundedTimeoutMs, Deadline } from "../../lib/budget.js";
 import { writeFileAtomic } from "../../lib/fsx.js";
+import { AccumStore, AccumEntry, AccumMergeStats, accumEnabled, staleMs } from "./accum.js";
 import { parseCsvLine } from "./csv.js";
 
 /**
@@ -23,6 +24,12 @@ export interface FeedHit {
   threat?: string;
   tags?: string[];
   dateadded?: string;
+  /** Present on accumulated-history hits: the source that listed the entry. */
+  source?: string;
+  /** Accumulated entry older than EGRESS_EYE_STALE_DAYS — the verdict layer downgrades it. */
+  stale?: boolean;
+  /** Whole days since an accumulated entry was last seen in a live mirror. */
+  ageDays?: number;
 }
 
 type FeedFormat = "plain-urls" | "urlhaus-json" | "urlhaus-csv";
@@ -67,6 +74,7 @@ export class MirrorFeed {
   private hosts = new Set<string>();
   private meta = new Map<string, FeedHit>();
   private loaded = false;
+  private accum: AccumStore | null = null;
 
   readonly source: SourceSpec;
   readonly file: string;
@@ -167,7 +175,15 @@ export class MirrorFeed {
     } else if (!this.note) {
       this.note = "no local feed yet — run `egress-eye update-feeds`";
     }
-    return this.urls.size > 0;
+    // Accumulated history: every key a downloaded mirror ever listed. Pinned
+    // files (fixtures, custom feeds) stay accumulation-free by design.
+    this.accum = null;
+    if (!this.pinEnv && accumEnabled()) {
+      const accum = new AccumStore();
+      accum.load();
+      this.accum = accum;
+    }
+    return this.urls.size > 0 || (this.accum?.size ?? 0) > 0;
   }
 
   private parse(body: string, format: FeedFormat): void {
@@ -233,7 +249,35 @@ export class MirrorFeed {
     return this.urls.size;
   }
 
-  /** Look up by exact URL first, then host. */
+  /** Number of accumulated-history entries backing this feed (0 when disabled/pinned). */
+  get accumSize(): number {
+    return this.accum?.size ?? 0;
+  }
+
+  /** Age of the oldest accumulated entry in ms (Infinity when empty). */
+  get accumOldestAgeMs(): number {
+    return this.accum?.oldestAgeMs() ?? Infinity;
+  }
+
+  /**
+   * Fold the currently loaded mirror into the accumulating store. Called by
+   * `update-feeds`; a no-op for pinned files or when accumulation is disabled.
+   */
+  accumulate(now = Date.now()): AccumMergeStats & { pruned: number; saved: boolean } {
+    if (this.pinEnv || !accumEnabled()) {
+      return { added: 0, refreshed: 0, pruned: 0, saved: false };
+    }
+    const accum = this.accum ?? new AccumStore();
+    this.accum = accum;
+    accum.load();
+    const keys = new Set<string>([...this.urls, ...this.hosts]);
+    const { added, refreshed } = accum.merge(keys, this.source.name, now);
+    const pruned = accum.prune(now);
+    accum.save();
+    return { added, refreshed, pruned, saved: true };
+  }
+
+  /** Look up by exact URL first, then host; falls back to accumulated history. */
   hit(host: string, fullUrl: string): FeedHit | null {
     const lowered = fullUrl.toLowerCase();
     const byUrl = this.meta.get(lowered);
@@ -242,6 +286,24 @@ export class MirrorFeed {
     if (byHost) return { ...byHost, kind: "host" };
     if (this.hosts.has(host.toLowerCase())) return { kind: "host" };
     if (this.urls.has(lowered)) return { kind: "url" };
+
+    const accum = this.accum;
+    if (accum) {
+      const aUrl = accum.get(lowered);
+      if (aUrl) return this.accumHit("url", aUrl);
+      const aHost = accum.get(host.toLowerCase());
+      if (aHost) return this.accumHit("host", aHost);
+    }
     return null;
+  }
+
+  private accumHit(kind: "url" | "host", entry: AccumEntry): FeedHit {
+    const ageMs = Date.now() - entry.lastSeen;
+    return {
+      kind,
+      source: entry.source,
+      stale: ageMs > staleMs(),
+      ageDays: Math.floor(ageMs / 86400000),
+    };
   }
 }

@@ -56,6 +56,10 @@ Environment:
   EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus
   EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt);
                                read-only — update-feeds never writes a pinned feed file
+  EGRESS_EYE_ACCUMULATE=0      disable the local accumulating history (default: on —
+                               update-feeds folds each mirror download into it)
+  EGRESS_EYE_STALE_DAYS        accumulated entry age after which hits are downgraded
+                               from malicious to suspicious (default 30)
   EGRESS_EYE_URLHAUS_AUTH_KEY  abuse.ch auth key (only for EGRESS_EYE_FEED_SOURCE=urlhaus)
   EGRESS_EYE_GSB_KEY           Google Safe Browsing API key (optional; sends URLs to Google)
   EGRESS_EYE_RDAP=0            disable newly-registered-domain lookups
@@ -164,6 +168,12 @@ async function cmdUpdateFeeds(): Promise<void> {
   const feed = MirrorFeed.open();
   process.stdout.write(`Refreshing ${feed.source.name} (${feed.source.url ?? "local file"}) …\n`);
   await feed.load(true);
+  const accum = feed.accumulate();
+  if (accum.saved) {
+    process.stdout.write(
+      `Accumulated history: ${feed.accumSize} entries (+${accum.added} added, ${accum.refreshed} refreshed, ${accum.pruned} pruned)\n`,
+    );
+  }
   if (feed.size > 0) {
     const ageH = feed.ageMs === Infinity ? "?" : (feed.ageMs / 3600000).toFixed(1);
     process.stdout.write(`OK: ${feed.size} URLs mirrored at ${feed.file} (age ${ageH}h)\n`);
@@ -668,9 +678,14 @@ async function cmdDoctor(): Promise<void> {
   if (feed.size > 0) {
     const ageH = feed.ageMs / 3600000;
     ok(`${feed.source.name} mirror: ${feed.size} URLs, age ${(feed.ageMs === Infinity ? 0 : ageH).toFixed(1)}h`);
-    if (feed.size < 1000) {
+    if (feed.accumSize > 0) {
+      const oldestDays = Math.floor(feed.accumOldestAgeMs / 86400000);
+      ok(`accumulated history: ${feed.accumSize} entries, oldest ${oldestDays} day${oldestDays === 1 ? "" : "s"} ago (stale after 30 days → suspicious)`);
+    }
+    const coverage = feed.size + feed.accumSize;
+    if (coverage < 1000) {
       warn(
-        `mirror holds only ${feed.size} entries — the community feed is a ~300-entry rolling window, so per-host coverage decays within days; keyed sources (EGRESS_EYE_URLHAUS_AUTH_KEY, EGRESS_EYE_GSB_KEY) carry far larger lists`,
+        `coverage holds only ${feed.size} live entries${feed.accumSize > 0 ? ` + ${feed.accumSize} accumulated` : ""} — the community feed is a ~300-entry rolling window; keyed sources (EGRESS_EYE_URLHAUS_AUTH_KEY, EGRESS_EYE_GSB_KEY) carry far larger lists`,
       );
     }
     if (ageH > 48) warn("feed is stale — run `egress-eye update-feeds`");

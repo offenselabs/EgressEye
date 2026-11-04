@@ -63,16 +63,28 @@ export async function judgeUrl(u: ExtractedUrl, opts: JudgeOptions = {}): Promis
   });
 
   // 1. Local mirror feed (OpenPhish by default) — no data leaves the machine.
+  // Accumulated-history hits whose entry has left the live feed are stale:
+  // they mean "was listed N days ago", so they downgrade to suspicious.
   if (opts.urlhaus !== null) {
     const feed = opts.urlhaus;
     if (feed) {
       const hit = feed.hit(u.host, u.fullUrl);
       if (hit) {
-        const bits = [hit.kind === "host" ? "Host" : "URL", `listed in ${feed.source.name}`];
+        if (hit.stale) {
+          const src = hit.source ?? feed.source.name;
+          const days = hit.ageDays ?? 0;
+          return mk(
+            "suspicious",
+            src,
+            `${hit.kind === "host" ? "Host" : "URL"} listed in ${src} ${days} day${days === 1 ? "" : "s"} ago (stale — no longer in the live feed)`,
+          );
+        }
+        const src = hit.source ?? feed.source.name;
+        const bits = [hit.kind === "host" ? "Host" : "URL", `listed in ${src}`];
         if (hit.threat) bits.push(`threat: ${hit.threat}`);
         if (hit.tags && hit.tags.length > 0) bits.push(`tags: ${hit.tags.slice(0, 4).join(", ")}`);
         if (hit.dateadded) bits.push(`added ${hit.dateadded.slice(0, 10)}`);
-        return mk("malicious", feed.source.name, bits.join(" · "));
+        return mk("malicious", src, bits.join(" · "));
       }
     }
   }
