@@ -39,6 +39,20 @@ feed-confirmed hits for that reason.
   50k-row mirror, Node-boot floor (~45–55 ms) at the default feed size
   (see docs/release-assessment.md).
 
+- **The accumulated history is historical, not live.** `update-feeds` folds
+  every mirror download into a local store (`feeds/accum.txt`), so a host
+  that has left the rolling window keeps a memory — but the entry's meaning
+  changes with age. An accumulated hit is `malicious` only while the live
+  feed still lists the entry; once it has left it, the verdict becomes
+  `suspicious` with the entry's age ("listed in <source> N days ago") after
+  `EGRESS_EYE_STALE_DAYS` (default 30), and the entry is pruned after 180
+  days (hard cap 200 000 entries, oldest evicted first). Accumulated entries
+  carry no threat/tags metadata — only the source and the last-seen date.
+  Disable with `EGRESS_EYE_ACCUMULATE=0`; feed files pinned through
+  `EGRESS_EYE_FEED_FILE` never consult or grow the store. Accumulation also
+  adds per-tool-call parse cost proportional to the store size
+  (~5 ms per 9 000 entries).
+
 - Feed coverage is only as good as the source: the OpenPhish community feed is
   recent-entries (~hundreds of URLs), not exhaustive. Add keyed sources
   (URLhaus, Safe Browsing) for better recall.
