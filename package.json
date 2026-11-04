@@ -1,6 +1,6 @@
 {
   "name": "egress-eye",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Per-session egress visibility for AI coding agents: every external URL and secret an agent tries to send, with verdicts, reasons, and sources.",
   "license": "MIT",
   "type": "module",
