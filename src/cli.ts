@@ -252,6 +252,17 @@ function kebabEvent(event: string): string {
   return event.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 }
 
+/**
+ * Fresh installs default to enabled; an explicit user `false` is respected —
+ * doctor flags the disabled state, but init never overrides the user's choice.
+ */
+export function zcodeEnableDecision(current: boolean | undefined): { enabled: boolean | undefined; notice: string | null } {
+  if (current === false) {
+    return { enabled: false, notice: "hooks.enabled is explicitly false — left untouched; the egress-eye hooks will not run until it is enabled" };
+  }
+  return { enabled: true, notice: null };
+}
+
 const ZCODE_EVENTS = ["SessionStart", "PreToolUse", "PostToolUseFailure", "Stop"] as const;
 
 function zcodeConfigPath(project: boolean): string {
@@ -287,9 +298,10 @@ function initZcode(flags: Record<string, string | boolean>, project: boolean): v
 
   // Only default a fresh install to enabled; an explicit false is the
   // user's choice and is respected (doctor flags the disabled state).
-  if (hooks.enabled === undefined) hooks.enabled = true;
-  else if (hooks.enabled === false) {
-    process.stdout.write(`Note: hooks.enabled is explicitly false in ${cfgPath} — left untouched; the egress-eye hooks will not run until it is enabled.\n`);
+  const decision = zcodeEnableDecision(hooks.enabled);
+  hooks.enabled = decision.enabled;
+  if (decision.notice) {
+    process.stdout.write(`Note: ${decision.notice} (in ${cfgPath})\n`);
   }
   const events = hooks.events ?? {};
   for (const event of ZCODE_EVENTS) {
