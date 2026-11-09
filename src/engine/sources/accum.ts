@@ -21,8 +21,11 @@ import { writeFileAtomic } from "../../lib/fsx.js";
  * File format (feeds/accum.txt), one entry per line:
  *   <url-or-host> <source> <lastSeenEpochMs>
  *
- * The store is read-only at hook time; only `update-feeds` merges and writes
- * it. Entries carry no threat/tags metadata — those live in the live mirror.
+ * Lookups are read-only at hook time; writes happen in `update-feeds` and in
+ * hook-time staleness refreshes (never per tool call without a fresh mirror).
+ * Concurrent writers are last-wins — benign for the dominant same-source
+ * case. Entries carry no threat/tags metadata — those live in the live
+ * mirror.
  */
 
 export const ACCUM_TTL_MS = 180 * 24 * 60 * 60 * 1000;

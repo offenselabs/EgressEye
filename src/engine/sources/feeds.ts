@@ -86,6 +86,8 @@ export class MirrorFeed {
   readonly pinEnv: string | null;
   ageMs = Infinity;
   note = "";
+  /** Stats from the most recent accumulate() in this load(), null when none ran. */
+  lastAccumStats: (AccumMergeStats & { pruned: number; saved: boolean }) | null = null;
 
   private constructor(source: SourceSpec, file: string, pinEnv: string | null) {
     this.source = source;
@@ -120,6 +122,7 @@ export class MirrorFeed {
   async load(force = false, deadline?: Deadline): Promise<boolean> {
     if (this.loaded && !force) return this.urls.size > 0;
     this.loaded = true;
+    this.lastAccumStats = null;
     ensureDir(path.dirname(this.file));
 
     const key = this.source.keyEnv ? process.env[this.source.keyEnv] : undefined;
@@ -169,10 +172,16 @@ export class MirrorFeed {
     const loaded = this.loadLocal();
     // Self-maintaining accumulation: fold a freshly downloaded mirror into
     // the local history, so the store grows without manual update-feeds runs
-    // (~once a day per machine, when the mirror goes stale in a hook). The
-    // wall-clock budget guards the write; pinned files never accumulate.
-    if (downloaded && !this.pinEnv && accumEnabled() && !deadline?.expired()) {
-      this.accumulate();
+    // (~once a day per machine, when the mirror goes stale in a hook). It
+    // must never degrade the hook: skipped when the budget is nearly spent
+    // (the write can cost ~0.7 s at the 200k cap) and wrapped — a failed
+    // store write just misses this refresh while the verdicts go out.
+    if (downloaded && accumEnabled() && (deadline === undefined || deadline.remainingMs() > 1500)) {
+      try {
+        this.accumulate();
+      } catch {
+        this.note = "accumulation write failed — mirror refreshed without history update";
+      }
     }
     return loaded;
   }
@@ -270,8 +279,10 @@ export class MirrorFeed {
   }
 
   /**
-   * Fold the currently loaded mirror into the accumulating store. Called by
-   * `update-feeds`; a no-op for pinned files or when accumulation is disabled.
+   * Fold the currently loaded mirror into the accumulating store. Called
+   * after a fresh mirror download (hook staleness path) and by `update-feeds`
+   * (which also folds the local mirror when the download failed); a no-op for
+   * pinned files or when accumulation is disabled.
    */
   accumulate(now = Date.now()): AccumMergeStats & { pruned: number; saved: boolean } {
     if (this.pinEnv || !accumEnabled()) {
@@ -284,7 +295,9 @@ export class MirrorFeed {
     const { added, refreshed } = accum.merge(keys, this.source.name, now);
     const pruned = accum.prune(now);
     accum.save();
-    return { added, refreshed, pruned, saved: true };
+    const stats = { added, refreshed, pruned, saved: true };
+    this.lastAccumStats = stats;
+    return stats;
   }
 
   /** Look up by exact URL first, then host; falls back to accumulated history. */
