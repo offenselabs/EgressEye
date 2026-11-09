@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Verdict } from "../engine/verdict.js";
+import { isAllowlistedHost } from "../engine/allowlist.js";
 import { dataDir, ensureDir, sanitizeSessionId, sessionsDir } from "../lib/paths.js";
 import { writeFileAtomic } from "../lib/fsx.js";
 
@@ -107,6 +108,18 @@ export function listSessions(): Array<{ id: string; mtimeMs: number }> {
 }
 
 const VERDICT_ORDER: Record<string, number> = { malicious: 0, suspicious: 1, unknown: 2, clean: 3 };
+
+/**
+ * Integer env var with a default. Invalid values fall back — a bare
+ * `Number()` yields NaN and `NaN >= x` is false, which would silently
+ * disable the aggregate. `0` is a valid value and disables the feature.
+ */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
 
 export interface SummaryRow {
   kind: EventKind;
@@ -235,7 +248,7 @@ export function summarizeSession(id: string): SessionSummary {
     hostAgg.set(g.host, cur);
   }
   const aggregates: string[] = [];
-  const repeatThreshold = Number(process.env.EGRESS_EYE_REPEAT_THRESHOLD ?? 5);
+  const repeatThreshold = envInt("EGRESS_EYE_REPEAT_THRESHOLD", 5);
   for (const [host, agg] of hostAgg) {
     if (agg.count >= repeatThreshold) {
       aggregates.push(
@@ -245,6 +258,89 @@ export function summarizeSession(id: string): SessionSummary {
   }
   if (secretGroups.size >= 3) {
     aggregates.push(`${secretGroups.size} distinct secret findings in one session — secrets are being passed through tool calls repeatedly`);
+  }
+
+  // Cross-session persistence: a host contacted now that also appeared in
+  // recent past sessions — beaconing / recurring-C2 patterns no single
+  // session view can see. Allowlisted dev hosts are excluded: github.com and
+  // friends are legitimate repeat visitors. "Last M sessions" includes the
+  // current one; sessions recorded by concurrent sessions count too.
+  const persistWindow = envInt("EGRESS_EYE_PERSIST_SESSIONS", 5);
+  const persistThreshold = envInt("EGRESS_EYE_PERSIST_THRESHOLD", 3);
+  if (persistWindow > 1 && persistThreshold > 0) {
+    const prior = listSessions()
+      .filter((s) => s.id !== id)
+      .slice(0, persistWindow - 1);
+    const priorHits = new Map<string, number>();
+    for (const s of prior) {
+      const hosts = new Set<string>();
+      for (const e of readSession(s.id)) {
+        if (e.kind === "url" && e.host) hosts.add(e.host);
+      }
+      for (const h of hosts) priorHits.set(h, (priorHits.get(h) ?? 0) + 1);
+    }
+    // hostAgg skips malicious hosts (already flagged per-request); the
+    // persistence signal wants them, so worst verdicts come from urlGroups.
+    const hostWorst = new Map<string, Verdict>();
+    for (const [, g] of urlGroups) {
+      if (!g.host) continue;
+      const cur = hostWorst.get(g.host);
+      if (!cur || VERDICT_ORDER[g.verdict]! < VERDICT_ORDER[cur]!) hostWorst.set(g.host, g.verdict);
+    }
+    for (const [host, worst] of hostWorst) {
+      if (isAllowlistedHost(host)) continue;
+      const seen = 1 + (priorHits.get(host) ?? 0);
+      if (seen >= persistThreshold) {
+        aggregates.push(
+          `Host ${host} contacted in ${seen} of the last ${persistWindow} sessions — persistence pattern (possible beaconing or recurring C2 callback; worst verdict this session: ${worst})`,
+        );
+      }
+    }
+  }
+
+  // Cross-host sharded exfiltration, form 1: many distinct low-reputation
+  // hosts, each contacted fewer than the per-host repeat threshold — a
+  // rotating pool deliberately staying under the per-host radar.
+  const shardedHosts = envInt("EGRESS_EYE_SHARDED_HOSTS", 8);
+  if (shardedHosts > 0) {
+    let lowRep = 0;
+    for (const [host, agg] of hostAgg) {
+      if (!isAllowlistedHost(host) && agg.count < repeatThreshold) lowRep++;
+    }
+    if (lowRep >= shardedHosts) {
+      aggregates.push(
+        `Session contacted ${lowRep} distinct low-reputation hosts with minimal repeat contacts each — possible sharded exfiltration across a rotating host pool`,
+      );
+    }
+  }
+
+  // Cross-host sharded exfiltration, form 2: the same URL path reused across
+  // distinct hosts — beacon endpoints (/gate.php, /api/upload) rotate hosts,
+  // not paths. Allowlisted and clean hosts are excluded.
+  const sharedPathHosts = envInt("EGRESS_EYE_SHARED_PATH_HOSTS", 3);
+  if (sharedPathHosts > 0) {
+    const paths = new Map<string, Map<string, Verdict>>();
+    for (const [value, g] of urlGroups) {
+      if (!g.host || g.verdict === "clean" || isAllowlistedHost(g.host)) continue;
+      let pathname: string | null = null;
+      try {
+        pathname = new URL(value).pathname;
+      } catch {
+        continue; // malformed row URL — nothing to group on
+      }
+      const hosts = paths.get(pathname) ?? new Map<string, Verdict>();
+      const cur = hosts.get(g.host);
+      if (!cur || VERDICT_ORDER[g.verdict]! < VERDICT_ORDER[cur]!) hosts.set(g.host, g.verdict);
+      paths.set(pathname, hosts);
+    }
+    for (const [pathname, hosts] of paths) {
+      if (hosts.size >= sharedPathHosts) {
+        const worst = [...hosts.values()].sort((a, b) => VERDICT_ORDER[a]! - VERDICT_ORDER[b]!)[0]!;
+        aggregates.push(
+          `Path ${pathname} was contacted across ${hosts.size} distinct hosts — shared-endpoint pattern (possible rotating exfil infrastructure; worst verdict: ${worst})`,
+        );
+      }
+    }
   }
 
   return {
