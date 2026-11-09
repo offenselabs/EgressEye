@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Verdict } from "../engine/verdict.js";
-import { isAllowlistedHost } from "../engine/allowlist.js";
+import { isAllowlistedHost, allowlistKind, isLocalHost, isUserAllowlisted } from "../engine/allowlist.js";
 import { dataDir, ensureDir, sanitizeSessionId, sessionsDir } from "../lib/paths.js";
 import { writeFileAtomic } from "../lib/fsx.js";
 
@@ -121,6 +121,19 @@ function envInt(name: string, fallback: number): number {
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Aggregate eligibility for pattern signals: hosts that are realistic C2 /
+ * exfil candidates. Local dev names, loopback/RFC1918 addresses, fixed
+ * allowlisted infrastructure (npmjs.org, github.com — nobody can host on
+ * them) and user-vouched hosts are excluded. Attacker-hostable PaaS suffixes
+ * (*.vercel.app, *.workers.dev, …) stay ELIGIBLE — a user can deploy there,
+ * and so can an attacker.
+ */
+function patternEligible(host: string): boolean {
+  if (isLocalHost(host) || isUserAllowlisted(host)) return false;
+  return allowlistKind(host) !== "fixed";
 }
 
 export interface SummaryRow {
@@ -252,11 +265,13 @@ export function summarizeSession(id: string): SessionSummary {
     hostAgg.set(g.host, cur);
   }
   const aggregates: string[] = [];
-  const repeatThreshold = envInt("EGRESS_EYE_REPEAT_THRESHOLD", 5);
+  // 0 would make every contact fire — it is not a valid threshold here.
+  const repeatThreshold = envInt("EGRESS_EYE_REPEAT_THRESHOLD", 5) || 5;
   for (const [host, agg] of hostAgg) {
     if (agg.count >= repeatThreshold) {
+      const note = isAllowlistedHost(host) ? "host is on the dev allowlist — expected for known infrastructure" : "possible sharded exfiltration";
       aggregates.push(
-        `Host ${host} was contacted ${agg.count}× across ${agg.urls.size} distinct URL(s) this session — repeated-egress pattern (possible sharded exfiltration; worst verdict: ${agg.worst})`,
+        `Host ${host} was contacted ${agg.count}× across ${agg.urls.size} distinct URL(s) this session — repeated-egress pattern (${note}; worst verdict: ${agg.worst})`,
       );
     }
   }
@@ -266,12 +281,12 @@ export function summarizeSession(id: string): SessionSummary {
 
   // Cross-session persistence: a host contacted now that also appeared in
   // recent past sessions — beaconing / recurring-C2 patterns no single
-  // session view can see. Allowlisted dev hosts are excluded: github.com and
-  // friends are legitimate repeat visitors. "Last M sessions" includes the
-  // current one; sessions recorded by concurrent sessions count too.
+  // session view can see. Local dev hosts and fixed infrastructure are
+  // excluded (see patternEligible). "Last M sessions" includes the current
+  // one; sessions recorded by concurrent sessions count too.
   const persistWindow = envInt("EGRESS_EYE_PERSIST_SESSIONS", 5);
   const persistThreshold = envInt("EGRESS_EYE_PERSIST_THRESHOLD", 3);
-  if (persistWindow > 1 && persistThreshold > 0) {
+  if (persistWindow > 0 && persistThreshold > 0) {
     const prior = listSessions()
       .filter((s) => s.id !== id)
       .slice(0, persistWindow - 1);
@@ -292,46 +307,50 @@ export function summarizeSession(id: string): SessionSummary {
       if (!cur || VERDICT_ORDER[g.verdict]! < VERDICT_ORDER[cur]!) hostWorst.set(g.host, g.verdict);
     }
     for (const [host, worst] of hostWorst) {
-      if (isAllowlistedHost(host)) continue;
+      if (!patternEligible(host)) continue;
       const seen = 1 + (priorHits.get(host) ?? 0);
       if (seen >= persistThreshold) {
         aggregates.push(
-          `Host ${host} contacted in ${seen} of the last ${persistWindow} sessions — persistence pattern (possible beaconing or recurring C2 callback; worst verdict this session: ${worst})`,
+          `Host ${host} contacted in ${seen} of the last ${persistWindow} sessions (${prior.length + 1} on record) — persistence pattern (possible beaconing or recurring C2 callback; worst verdict this session: ${worst})`,
         );
       }
     }
   }
 
-  // Cross-host sharded exfiltration, form 1: many distinct low-reputation
-  // hosts, each contacted fewer than the per-host repeat threshold — a
-  // rotating pool deliberately staying under the per-host radar.
-  const shardedHosts = envInt("EGRESS_EYE_SHARDED_HOSTS", 8);
+  // Cross-host sharded exfiltration, form 1: many distinct hosts that carry
+  // no reputation signals, each contacted fewer than the per-host repeat
+  // threshold — a rotating pool deliberately staying under the per-host
+  // radar. Honest framing: the same shape is produced by broad research.
+  const shardedHosts = envInt("EGRESS_EYE_SHARDED_HOSTS", 12);
   if (shardedHosts > 0) {
-    let lowRep = 0;
+    let noSignalHosts = 0;
     for (const [host, agg] of hostAgg) {
-      if (!isAllowlistedHost(host) && agg.count < repeatThreshold) lowRep++;
+      if (patternEligible(host) && agg.count < repeatThreshold) noSignalHosts++;
     }
-    if (lowRep >= shardedHosts) {
+    if (noSignalHosts >= shardedHosts) {
       aggregates.push(
-        `Session contacted ${lowRep} distinct low-reputation hosts with minimal repeat contacts each — possible sharded exfiltration across a rotating host pool`,
+        `Session contacted ${noSignalHosts} distinct hosts with no reputation signals and minimal repeat contacts each — consistent with sharded exfiltration across a rotating pool, but also with broad research sessions (tune: EGRESS_EYE_SHARDED_HOSTS)`,
       );
     }
   }
 
   // Cross-host sharded exfiltration, form 2: the same URL path reused across
   // distinct hosts — beacon endpoints (/gate.php, /api/upload) rotate hosts,
-  // not paths. Allowlisted and clean hosts are excluded.
+  // not paths. Root paths (/) and crawler-common well-known paths carry no
+  // endpoint signal and are excluded.
   const sharedPathHosts = envInt("EGRESS_EYE_SHARED_PATH_HOSTS", 3);
   if (sharedPathHosts > 0) {
     const paths = new Map<string, Map<string, Verdict>>();
     for (const [value, g] of urlGroups) {
-      if (!g.host || g.verdict === "clean" || isAllowlistedHost(g.host)) continue;
+      if (!g.host || g.verdict === "clean" || !patternEligible(g.host)) continue;
       let pathname: string | null = null;
       try {
         pathname = new URL(value).pathname;
       } catch {
         continue; // malformed row URL — nothing to group on
       }
+      pathname = pathname.replace(/\/+$/, "").toLowerCase();
+      if (!pathname || /^\/(?:favicon\.ico|robots\.txt|sitemap\.xml|healthz?|ping|status|index\.[a-z]+)$/.test(pathname)) continue;
       const hosts = paths.get(pathname) ?? new Map<string, Verdict>();
       const cur = hosts.get(g.host);
       if (!cur || VERDICT_ORDER[g.verdict]! < VERDICT_ORDER[cur]!) hosts.set(g.host, g.verdict);
@@ -345,6 +364,14 @@ export function summarizeSession(id: string): SessionSummary {
         );
       }
     }
+  }
+
+  // The report is a human surface: a flood of observations hides the useful
+  // ones. Cap and point at the full report.
+  if (aggregates.length > 12) {
+    const hidden = aggregates.length - 12;
+    aggregates.length = 12;
+    aggregates.push(`…and ${hidden} more session-level observation(s) — see \`egress-eye report --all\``);
   }
 
   return {

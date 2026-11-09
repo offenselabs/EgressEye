@@ -195,10 +195,11 @@ the `dist` zip attached to each release.
 
 ## Development
 
-- `npm test` — 70 unit tests (`node --test`, fully offline)
-- `npm run eval` — 39-scenario labeled corpus replayed through the real hook
-  path; the corpus in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant
-  to be adopted by other tools so results can be compared
+- `npm test` — 104 unit tests (`node --test`, fully offline)
+- `npm run eval` — 41-check labeled corpus (38 single-call scenarios plus 3
+  multi-session aggregation checks) replayed through the real hook path; the
+  corpus in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant to be
+  adopted by other tools so results can be compared
 - `npm run doctor` — end-to-end smoke test of a real spawned hook
 - See [CONTRIBUTING.md](CONTRIBUTING.md) — three hard rules: zero runtime
   dependencies, no LLM in the verdict path, honesty over coverage

@@ -55,7 +55,7 @@ const PLACEHOLDER_RE = /^(?:\$\{.*\}|<.*>|\*+|x+|X+|example|changeme|your[-_].*|
 const DB_CREDS_RE = /\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp):\/\/[^\s:@/]+:([^\s@/]+)@/gi;
 
 /** ≥4 UPPER_SNAKE= assignments anywhere in the text → looks like a .env file. */
-const ENV_LINE_RE = /(?:^|[\s"'{=(])([A-Z][A-Z0-9_]{2,}=)([^\s"',;)]*)/gm;
+const ENV_LINE_RE = /(?:^|[\s"'{=(])([A-Z][A-Z0-9_]{2,}=)(?:"([^"]*)"|'([^']*)'|([^\s"',;)]*))/gm;
 
 export function shannonEntropy(s: string): number {
   if (s.length === 0) return 0;
@@ -145,7 +145,9 @@ export function scanSecrets(text: string): SecretFinding[] {
   const envAssignments = [...text.matchAll(ENV_LINE_RE)];
   const envKeys = new Set(envAssignments.map((m) => m[1]!));
   const secretishValues = envAssignments.filter((m) => {
-    const v = m[2] ?? "";
+    // Quoted values (`KEY="…"` — the common .env format) arrive in group 2/3,
+    // bare values in group 4.
+    const v = m[2] ?? m[3] ?? m[4] ?? "";
     return v.length >= 8 && shannonEntropy(v) >= 2.5 && !PLACEHOLDER_RE.test(v);
   });
   if (envKeys.size >= 4 && secretishValues.length >= 2) {

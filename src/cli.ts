@@ -62,7 +62,11 @@ Environment:
                                expired stages are skipped with an honest note, never mid-flight
   EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus | feodo
   EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt);
-                               read-only — update-feeds never writes a pinned feed file
+                               read-only — update-feeds never writes a pinned feed file.
+                               Format follows the file extension unless FEED_SOURCE is set
+  EGRESS_EYE_EXTRA_ALLOWLIST   comma-separated hosts/domains you vouch for (an internal
+                               service, a self-hosted tool) — excluded from session-level
+                               pattern aggregates; feed hits still apply
   EGRESS_EYE_ACCUMULATE=0      disable the local accumulating history (default: on —
                                update-feeds folds each mirror download into it)
   EGRESS_EYE_STALE_DAYS        accumulated entry age after which hits are downgraded
@@ -183,9 +187,15 @@ async function cmdUpdateFeeds(): Promise<void> {
       `Accumulated history: ${feed.accumSize} entries (+${accum.added} added, ${accum.refreshed} refreshed, ${accum.pruned} pruned)\n`,
     );
   }
-  if (feed.entries > 0) {
+  if (feed.entries > 0 || feed.lastDownloadSucceeded) {
     const ageH = feed.ageMs === Infinity ? "?" : (feed.ageMs / 3600000).toFixed(1);
-    process.stdout.write(`OK: ${feed.entries} entries mirrored at ${feed.file} (age ${ageH}h)\n`);
+    if (feed.entries === 0) {
+      // A successful download that carries zero indicators is legitimate for
+      // dormancy-prone sources (Feodo Tracker): no active C2, not a failure.
+      process.stdout.write(`OK: 0 entries mirrored at ${feed.file} (age ${ageH}h) — the source's list is currently empty (expected for Feodo Tracker during botnet dormancy)\n`);
+    } else {
+      process.stdout.write(`OK: ${feed.entries} entries mirrored at ${feed.file} (age ${ageH}h)\n`);
+    }
   } else {
     process.stderr.write(`Failed to download the feed${feed.note ? `: ${feed.note}` : ""}. Check connectivity.\n`);
     process.stderr.write(`Available sources:\n  ${describeSources()}\n`);
@@ -715,6 +725,8 @@ async function cmdDoctor(): Promise<void> {
       );
     }
     if (ageH > 48) warn("feed is stale — run `egress-eye update-feeds`");
+  } else if (fs.existsSync(feed.file)) {
+    ok(`${feed.source.name} mirror holds 0 entries — for dormancy-prone sources (feodo) this is expected; coverage resumes when the list repopulates`);
   } else {
     warn(`no local feed (${feed.note || "run `egress-eye update-feeds`"})`);
   }

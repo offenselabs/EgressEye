@@ -28,6 +28,8 @@ actions at runtime.
 | Agent uses a freshly registered throwaway domain | RDAP age check → `suspicious` (< 30 days) |
 | Agent sends credentials/tokens in tool calls | secret patterns + entropy + env-blob detection, redacted on disk |
 | Exfiltration sharded across many small requests | session aggregation: repeated contacts with the same non-clean host become one finding |
+| Agent rotates endpoints across a pool of fresh domains | rotation-pool and shared-endpoint session aggregates (informational, threshold-tunable) |
+| Agent beacons to the same host across sessions | cross-session persistence aggregate (informational) |
 | URLs hidden with defanging (`hxxp://`, `[.]`) | refanging before extraction |
 | Agent hides exfil endpoints in scripts it writes | Write/Edit tool inputs are scanned like commands |
 

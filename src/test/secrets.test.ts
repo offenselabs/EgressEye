@@ -1,6 +1,16 @@
-import { test } from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { scanSecrets, shannonEntropy } from "../engine/secrets.js";
+
+// The fingerprint machinery reads/creates dataDir()/salt — tests must never
+// touch the real ~/.egress-eye.
+import path from "node:path";
+process.env.EGRESS_EYE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "egress-eye-secrets-"));
+after(() => {
+  fs.rmSync(process.env.EGRESS_EYE_HOME!, { recursive: true, force: true });
+});
 
 test("aws access key id", () => {
   const f = scanSecrets('echo "AKIAIOSFODNN7EXAMPLE"');
@@ -86,6 +96,12 @@ test("env blob: real .env content still fires with value evidence", () => {
   const blob = f.find((x) => x.id === "env-blob");
   assert.ok(blob, "a real .env blob still fires");
   assert.match(blob!.description, /secret-like values/);
+});
+
+test("env blob: quoted .env values (the common format) still fire", () => {
+  const text = 'DB_HOST="localhost"\nDB_USER="admin"\nDB_PASS="Sup3rS3cretValue!"\nAWS_SECRET="wJalrXUtnFEMI/K7MDENG"';
+  const f = scanSecrets(text);
+  assert.ok(f.some((x) => x.id === "env-blob"), "quoted .env values must not defeat the value gate");
 });
 
 test("findings carry an irreversible fingerprint that distinguishes same-preview secrets", () => {

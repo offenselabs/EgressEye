@@ -14,7 +14,7 @@ purpose; a security tool that hides its limits is marketing, not security.
 | Non-HTTP protocols (raw sockets, DNS tunneling) | v1 extracts URLs only |
 | Obfuscate beyond defanging (hex IPs, URL shorteners, base64 in paths) | heuristics catch common forms, not all forms |
 | Send secrets inside "benign" encodings (image upload, git push) | secret patterns are textual |
-| Split exfil across hosts (1 request each) | aggregation is per-host; cross-host patterns are future work |
+| Split exfil across hosts (1 request each) | partially mitigated: per-host repeats, rotation pools, shared endpoints, and cross-session persistence are aggregated (informationally) — but an attacker varying hosts, paths, and sessions together stays under every threshold |
 
 ## False positives to expect
 

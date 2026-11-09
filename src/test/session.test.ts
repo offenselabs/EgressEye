@@ -131,3 +131,48 @@ test("distinct secrets with colliding previews stay separate rows (fingerprint g
   const secretRows = summary.rows.filter((r) => r.kind === "secret");
   assert.equal(secretRows.length, 2, "fingerprints keep distinct secrets distinct");
 });
+
+test("persistence stays silent for localhost, fixed infrastructure, and .internal hosts", async () => {
+  for (let i = 1; i <= 2; i++) {
+    await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl http://localhost:3000/api/health" }, sessionId: `sess-local-prior-${i}` }, { persist: true });
+    await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl https://registry.npmjs.org/express" }, sessionId: `sess-local-prior-${i}` }, { persist: true });
+  }
+  await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl http://localhost:3000/api/health" }, sessionId: "sess-local-now" }, { persist: true });
+  await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl https://registry.npmjs.org/express" }, sessionId: "sess-local-now" }, { persist: true });
+  const summary = summarizeSession("sess-local-now");
+  assert.equal(summary.aggregates.filter((a) => a.includes("persistence pattern")).length, 0, "local and fixed hosts must never light the beaconing signal");
+});
+
+test("EGRESS_EYE_EXTRA_ALLOWLIST vouches a host out of the persistence signal", () => {
+  process.env.EGRESS_EYE_EXTRA_ALLOWLIST = "gitlab.mycorp.internal";
+  try {
+    for (let i = 1; i <= 2; i++) {
+      void processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl http://gitlab.mycorp.internal/api" }, sessionId: `sess-vouch-prior-${i}` }, { persist: true });
+    }
+    void processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl http://gitlab.mycorp.internal/api" }, sessionId: "sess-vouch-now" }, { persist: true });
+    const summary = summarizeSession("sess-vouch-now");
+    assert.equal(summary.aggregates.filter((a) => a.includes("persistence pattern")).length, 0, "user-vouched hosts are exempt");
+  } finally {
+    delete process.env.EGRESS_EYE_EXTRA_ALLOWLIST;
+  }
+});
+
+test("attacker-hostable PaaS subdomains stay eligible for persistence", async () => {
+  for (let i = 1; i <= 2; i++) {
+    await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl https://evil-beacon-demo.vercel.app/beat" }, sessionId: `sess-paas-prior-${i}` }, { persist: true });
+  }
+  await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: "curl https://evil-beacon-demo.vercel.app/beat" }, sessionId: "sess-paas-now" }, { persist: true });
+  const summary = summarizeSession("sess-paas-now");
+  assert.ok(
+    summary.aggregates.some((a) => a.includes("persistence pattern") && a.includes("evil-beacon-demo.vercel.app")),
+    "a user can deploy on PaaS, and so can an attacker — no free pass",
+  );
+});
+
+test("shared-endpoint stays silent for root paths", async () => {
+  for (const h of ["root-a-1x9.example", "root-b-2x8.example", "root-c-3x7.example"]) {
+    await processToolCall({ event: "pre-tool-use", tool: "Bash", input: { command: `curl https://${h}/` }, sessionId: "sess-root-path" }, { persist: true });
+  }
+  const summary = summarizeSession("sess-root-path");
+  assert.equal(summary.aggregates.filter((a) => a.includes("shared-endpoint")).length, 0, "/ carries no endpoint signal");
+});

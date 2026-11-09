@@ -97,6 +97,8 @@ export class MirrorFeed {
   note = "";
   /** Stats from the most recent accumulate() in this load(), null when none ran. */
   lastAccumStats: (AccumMergeStats & { pruned: number; saved: boolean }) | null = null;
+  /** True when the most recent load() downloaded a fresh mirror. */
+  lastDownloadSucceeded = false;
 
   private constructor(source: SourceSpec, file: string, pinEnv: string | null) {
     this.source = source;
@@ -116,7 +118,11 @@ export class MirrorFeed {
           : null;
     const file =
       opts.file ?? process.env.EGRESS_EYE_FEED_FILE ?? process.env.EGRESS_EYE_URLHAUS_FILE ?? path.join(feedsDir(), source.file);
-    return new MirrorFeed(source, file, pinEnv);
+    const feed = new MirrorFeed(source, file, pinEnv);
+    if (!SOURCES[sourceName]) {
+      feed.note = `unknown source '${sourceName}' — falling back to openphish (available: ${Object.keys(SOURCES).join(", ")})`;
+    }
+    return feed;
   }
 
   /** Format for a local file: explicit source format, or inferred by extension. */
@@ -129,9 +135,10 @@ export class MirrorFeed {
 
   /** Load the local mirror, downloading a fresh copy when stale or missing. */
   async load(force = false, deadline?: Deadline): Promise<boolean> {
-    if (this.loaded && !force) return this.urls.size > 0;
+    if (this.loaded && !force) return this.entries > 0 || (this.accum?.size ?? 0) > 0;
     this.loaded = true;
     this.lastAccumStats = null;
+    this.lastDownloadSucceeded = false;
     ensureDir(path.dirname(this.file));
 
     const key = this.source.keyEnv ? process.env[this.source.keyEnv] : undefined;
@@ -170,6 +177,7 @@ export class MirrorFeed {
           writeFileAtomic(this.file, body);
           this.ageMs = 0;
           downloaded = true;
+          this.lastDownloadSucceeded = true;
         } else {
           this.note = `feed refresh got HTTP ${res.status} — using local mirror as-is`;
         }
