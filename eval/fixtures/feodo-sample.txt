@@ -1,0 +1,7 @@
+# Synthetic Feodo Tracker recommended-blocklist sample (plain IPs, one per line).
+# Mirrors https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt format.
+185.220.101.4
+45.133.1.35
+193.42.33.18
+92.38.152.137
+5.188.206.18

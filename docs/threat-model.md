@@ -56,7 +56,10 @@ EgressEye as the audit layer on top.
 ## Data handling
 
 - Session files: `~/.egress-eye/sessions/*.jsonl` — URLs stored query-stripped;
-  secrets stored as 4-character prefixes + length; tool inputs are not stored.
+  secrets stored as 4-character prefixes + length, plus a salted fingerprint
+  (SHA-256 over a machine-local random salt) used only to group repeated
+  contacts with the same secret — it is not reversible and the salt never
+  leaves the machine; tool inputs are not stored.
 - Feed mirrors: downloaded lists checked in memory; lookups never leave the machine.
 - The only outbound-data options are explicit: `EGRESS_EYE_GSB_KEY` (URLs →
   Google) and RDAP (registrar queries for a registrable domain). Both are

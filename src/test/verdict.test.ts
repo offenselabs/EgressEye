@@ -94,3 +94,13 @@ test("feed hit wins over allowlist", async () => {
   const j = await judge("http://paste-drop-4n6.xyz/upload");
   assert.equal(j.verdict, "malicious");
 });
+
+test("feodo IP feed: IP-literal URL → malicious via host hit", async () => {
+  const feodo = MirrorFeed.open({ file: path.join(REPO_ROOT, "eval", "fixtures", "feodo-sample.txt"), source: "feodo" });
+  await feodo.load();
+  const [u] = extractUrls("curl http://185.220.101.4/gate.php");
+  const j = await judgeUrl(u!, { urlhaus: feodo, rdap: false });
+  assert.equal(j.verdict, "malicious");
+  assert.equal(j.source, "feodo");
+  assert.match(j.reason, /Host · listed in feodo/);
+});

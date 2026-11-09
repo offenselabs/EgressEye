@@ -143,3 +143,29 @@ test("CLI update-feeds refuses to run while a feed file is pinned", () => {
   assert.match(res.stderr, /never writes pinned feed files/);
   assert.equal(fs.readFileSync(file, "utf8"), "sentinel\n");
 });
+
+test("plain-ips feed (feodo): bare IPs load as hosts and match IP-literal URLs", async () => {
+  await withEnv({ EGRESS_EYE_FEED_FILE: undefined, EGRESS_EYE_URLHAUS_FILE: undefined, EGRESS_EYE_FEED_SOURCE: undefined }, async () => {
+    const fixture = path.join(REPO_ROOT, "eval", "fixtures", "feodo-sample.txt");
+    const feed = MirrorFeed.open({ file: fixture, source: "feodo" });
+    const ok = await feed.load();
+    assert.equal(ok, true);
+    assert.equal(feed.size, 0, "bare IPs are not URLs");
+    assert.equal(feed.entries, 5);
+    const hit = feed.hit("185.220.101.4", "http://185.220.101.4/gate.php");
+    assert.ok(hit, "IP-literal URL matches the bare-IP indicator");
+    assert.equal(hit.kind, "host");
+    assert.equal(feed.hit("example.com", "https://example.com/x"), null);
+  });
+});
+
+test("an empty plain-ips feed is legitimate (botnet dormancy), not an error", async () => {
+  await withEnv({ EGRESS_EYE_FEED_FILE: undefined, EGRESS_EYE_URLHAUS_FILE: undefined, EGRESS_EYE_FEED_SOURCE: undefined }, async () => {
+    const file = tmpFile("empty-feodo.txt");
+    fs.writeFileSync(file, "", "utf8");
+    const feed = MirrorFeed.open({ file, source: "feodo" });
+    await feed.load();
+    assert.equal(feed.entries, 0, "no IPs parsed from the empty list");
+    assert.equal(feed.note, "", "an empty IP list means no active C2 — no missing-feed note");
+  });
+});

@@ -51,9 +51,16 @@ Environment:
   EGRESS_EYE_ANNOUNCE=0        stop injecting the session summary into the conversation
   EGRESS_EYE_REPEAT_THRESHOLD  distinct-URL contacts per host before the sharded-egress
                                aggregate fires (default 5)
+  EGRESS_EYE_PERSIST_SESSIONS  sessions in the persistence window (default 5; 0 disables)
+  EGRESS_EYE_PERSIST_THRESHOLD sessions a non-allowlisted host must appear in before the
+                               persistence aggregate fires (default 3; 0 disables)
+  EGRESS_EYE_SHARDED_HOSTS     distinct low-reputation hosts before the rotation-pool aggregate
+                               fires (default 8; 0 disables)
+  EGRESS_EYE_SHARED_PATH_HOSTS distinct hosts sharing one URL path before the shared-endpoint
+                               aggregate fires (default 3; 0 disables)
   EGRESS_EYE_HOOK_BUDGET_MS    whole-hook wall-clock budget in ms (default 8000; 0 disables) —
                                expired stages are skipped with an honest note, never mid-flight
-  EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus
+  EGRESS_EYE_FEED_SOURCE       openphish (default) | urlhaus | feodo
   EGRESS_EYE_FEED_FILE         use a specific feed file (eval/fixtures; .csv/.json/.txt);
                                read-only — update-feeds never writes a pinned feed file
   EGRESS_EYE_ACCUMULATE=0      disable the local accumulating history (default: on —
@@ -176,9 +183,9 @@ async function cmdUpdateFeeds(): Promise<void> {
       `Accumulated history: ${feed.accumSize} entries (+${accum.added} added, ${accum.refreshed} refreshed, ${accum.pruned} pruned)\n`,
     );
   }
-  if (feed.size > 0) {
+  if (feed.entries > 0) {
     const ageH = feed.ageMs === Infinity ? "?" : (feed.ageMs / 3600000).toFixed(1);
-    process.stdout.write(`OK: ${feed.size} URLs mirrored at ${feed.file} (age ${ageH}h)\n`);
+    process.stdout.write(`OK: ${feed.entries} entries mirrored at ${feed.file} (age ${ageH}h)\n`);
   } else {
     process.stderr.write(`Failed to download the feed${feed.note ? `: ${feed.note}` : ""}. Check connectivity.\n`);
     process.stderr.write(`Available sources:\n  ${describeSources()}\n`);
@@ -278,7 +285,12 @@ function initZcode(flags: Record<string, string | boolean>, project: boolean): v
     return;
   }
 
-  hooks.enabled = true;
+  // Only default a fresh install to enabled; an explicit false is the
+  // user's choice and is respected (doctor flags the disabled state).
+  if (hooks.enabled === undefined) hooks.enabled = true;
+  else if (hooks.enabled === false) {
+    process.stdout.write(`Note: hooks.enabled is explicitly false in ${cfgPath} — left untouched; the egress-eye hooks will not run until it is enabled.\n`);
+  }
   const events = hooks.events ?? {};
   for (const event of ZCODE_EVENTS) {
     const list = Array.isArray(events[event]) ? (events[event] as unknown[]) : [];
@@ -677,17 +689,17 @@ async function cmdDoctor(): Promise<void> {
   process.stdout.write("\n[feed]\n");
   const feed = MirrorFeed.open();
   await feed.load();
-  if (feed.size > 0) {
+  if (feed.entries > 0) {
     const ageH = feed.ageMs / 3600000;
-    ok(`${feed.source.name} mirror: ${feed.size} URLs, age ${(feed.ageMs === Infinity ? 0 : ageH).toFixed(1)}h`);
+    ok(`${feed.source.name} mirror: ${feed.entries} entries, age ${(feed.ageMs === Infinity ? 0 : ageH).toFixed(1)}h`);
     if (feed.accumSize > 0) {
       const oldestDays = Math.floor(feed.accumOldestAgeMs / 86400000);
       ok(`accumulated history: ${feed.accumSize} entries, oldest ${oldestDays} day${oldestDays === 1 ? "" : "s"} ago (stale after 30 days → suspicious)`);
     }
-    const coverage = feed.size + feed.accumSize;
+    const coverage = feed.entries + feed.accumSize;
     if (coverage < 1000) {
       warn(
-        `coverage holds only ${feed.size} live entries${feed.accumSize > 0 ? ` + ${feed.accumSize} accumulated` : ""} — the community feed is a ~300-entry rolling window; keyed sources (EGRESS_EYE_URLHAUS_AUTH_KEY, EGRESS_EYE_GSB_KEY) carry far larger lists`,
+        `coverage holds only ${feed.entries} live entries${feed.accumSize > 0 ? ` + ${feed.accumSize} accumulated` : ""} — the community feed is a ~300-entry rolling window; keyed sources (EGRESS_EYE_URLHAUS_AUTH_KEY, EGRESS_EYE_GSB_KEY) carry far larger lists`,
       );
     }
     if (ageH > 48) warn("feed is stale — run `egress-eye update-feeds`");

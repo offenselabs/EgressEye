@@ -23,7 +23,15 @@ purpose; a security tool that hides its limits is marketing, not security.
 - Non-standard ports on internal services (`localhost:8080` style is fine — IP
   literals are flagged regardless)
 - Multi-purpose constants that look like tokens (entropy gate reduces this)
-- `env-blob` on non-secret UPPER_SNAKE constants (e.g. several `const MAX_X=` in one command)
+- `env-blob` when 4+ UPPER_SNAKE constants carry 2+ long, high-entropy values
+  (the value gate filters pure-number constant blocks like `const MAX_X=1`)
+- **Persistence aggregate** on hosts that legitimately recur across sessions
+  and are not in the dev allowlist (e.g. a self-hosted internal service);
+  tune with `EGRESS_EYE_PERSIST_THRESHOLD`/`EGRESS_EYE_PERSIST_SESSIONS`
+- **Rotation-pool / shared-endpoint aggregates** on research-heavy sessions
+  that legitimately touch many low-reputation or similarly-pathed hosts;
+  tune with `EGRESS_EYE_SHARDED_HOSTS` / `EGRESS_EYE_SHARED_PATH_HOSTS`
+  (both `0` disable)
 
 `unknown` is the default verdict on purpose: it means "no evidence either
 way", not "safe", and not "dangerous". Blocking (block mode) only fires on

@@ -32,7 +32,7 @@ export interface FeedHit {
   ageDays?: number;
 }
 
-type FeedFormat = "plain-urls" | "urlhaus-json" | "urlhaus-csv";
+type FeedFormat = "plain-urls" | "plain-ips" | "urlhaus-json" | "urlhaus-csv";
 
 interface SourceSpec {
   name: string;
@@ -61,6 +61,13 @@ const SOURCES: Record<string, SourceSpec> = {
     file: "urlhaus.json",
     format: "urlhaus-json",
   },
+  feodo: {
+    name: "feodo",
+    description: "Feodo Tracker by abuse.ch (botnet C2 IPs: Dridex, Emotet, TrickBot, QakBot, BazarLoader; keyless — the recommended list can legitimately be empty during botnet dormancy)",
+    url: "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt",
+    file: "feodo-ips.txt",
+    format: "plain-ips",
+  },
 };
 
 export function describeSources(): string {
@@ -72,6 +79,8 @@ export function describeSources(): string {
 export class MirrorFeed {
   private urls = new Set<string>();
   private hosts = new Set<string>();
+  /** Hosts added directly (bare IPs from IP-only feeds), not derived from a URL. */
+  private bareHosts = new Set<string>();
   private meta = new Map<string, FeedHit>();
   private loaded = false;
   private accum: AccumStore | null = null;
@@ -202,7 +211,7 @@ export class MirrorFeed {
       accum.load();
       this.accum = accum;
     }
-    return this.urls.size > 0 || (this.accum?.size ?? 0) > 0;
+    return this.entries > 0 || (this.accum?.size ?? 0) > 0;
   }
 
   private parse(body: string, format: FeedFormat): void {
@@ -211,6 +220,19 @@ export class MirrorFeed {
         const url = line.trim().toLowerCase();
         if (!url || !url.includes("://")) continue;
         this.addUrl(url, { kind: "url" });
+      }
+      return;
+    }
+    if (format === "plain-ips") {
+      // Bare C2 IPs (Feodo Tracker): stored as hosts, so any IP-literal URL
+      // to them matches through the host path. An empty list is legitimate —
+      // botnet dormancy varies; it means no active C2, not a broken feed.
+      for (const line of body.split("\n")) {
+        const ip = line.trim().toLowerCase();
+        if (!ip || ip.startsWith("#") || !ip.includes(".")) continue;
+        this.bareHosts.add(ip);
+        this.hosts.add(ip);
+        this.meta.set(ip, { kind: "host" });
       }
       return;
     }
@@ -266,6 +288,11 @@ export class MirrorFeed {
 
   get size(): number {
     return this.urls.size;
+  }
+
+  /** Distinct indicators currently loaded: URLs plus bare hosts/IPs. */
+  get entries(): number {
+    return this.urls.size + this.bareHosts.size;
   }
 
   /** Number of accumulated-history entries backing this feed (0 when disabled/pinned). */
