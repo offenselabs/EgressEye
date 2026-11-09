@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { hermesPreToolCall, runHermesEvent } from "../hooks/hermes.js";
 import { runHook } from "../hooks/zcode.js";
 import { CODEX_BLOCK_START, CODEX_BLOCK_END, codexHookBlock, stripCodexBlock } from "../cli.js";
-import { opencodePluginSource, hermesPluginYaml, hermesInitPy } from "../cli.js";
+import { opencodePluginSource, hermesPluginYaml, hermesInitPy, zcodeEnableDecision } from "../cli.js";
 import { sessionsDir, dataDir } from "../lib/paths.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -183,4 +183,12 @@ test("session id can arrive via stdin payload (claude/codex style)", async () =>
   assert.equal(code, 0);
   const files = fs.readdirSync(sessionsDir());
   assert.ok(files.some((f) => f.startsWith("stdin-sess-77")), JSON.stringify(files));
+});
+
+test("zcodeEnableDecision: fresh install enables, explicit false is respected", () => {
+  assert.deepEqual(zcodeEnableDecision(undefined), { enabled: true, notice: null });
+  assert.deepEqual(zcodeEnableDecision(true), { enabled: true, notice: null });
+  const refused = zcodeEnableDecision(false);
+  assert.equal(refused.enabled, false);
+  assert.match(refused.notice!, /explicitly false/);
 });

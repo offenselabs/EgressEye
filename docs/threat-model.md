@@ -28,6 +28,8 @@ actions at runtime.
 | Agent uses a freshly registered throwaway domain | RDAP age check → `suspicious` (< 30 days) |
 | Agent sends credentials/tokens in tool calls | secret patterns + entropy + env-blob detection, redacted on disk |
 | Exfiltration sharded across many small requests | session aggregation: repeated contacts with the same non-clean host become one finding |
+| Agent rotates endpoints across a pool of fresh domains | rotation-pool and shared-endpoint session aggregates (informational, threshold-tunable) |
+| Agent beacons to the same host across sessions | cross-session persistence aggregate (informational) |
 | URLs hidden with defanging (`hxxp://`, `[.]`) | refanging before extraction |
 | Agent hides exfil endpoints in scripts it writes | Write/Edit tool inputs are scanned like commands |
 
@@ -56,7 +58,10 @@ EgressEye as the audit layer on top.
 ## Data handling
 
 - Session files: `~/.egress-eye/sessions/*.jsonl` — URLs stored query-stripped;
-  secrets stored as 4-character prefixes + length; tool inputs are not stored.
+  secrets stored as 4-character prefixes + length, plus a salted fingerprint
+  (SHA-256 over a machine-local random salt) used only to group repeated
+  contacts with the same secret — it is not reversible and the salt never
+  leaves the machine; tool inputs are not stored.
 - Feed mirrors: downloaded lists checked in memory; lookups never leave the machine.
 - The only outbound-data options are explicit: `EGRESS_EYE_GSB_KEY` (URLs →
   Google) and RDAP (registrar queries for a registrable domain). Both are

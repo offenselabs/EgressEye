@@ -110,6 +110,7 @@ export async function processToolCall(call: ToolCallInput, opts: ProcessOptions 
         value: s.preview,
         source: s.id,
         reason: s.description,
+        fingerprint: s.fingerprint,
         note,
       });
     }

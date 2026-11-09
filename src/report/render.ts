@@ -64,6 +64,7 @@ export function renderSummary(s: SessionSummary, opts: { color?: boolean; markdo
 
   if (interesting.length === 0) {
     lines.push("No flagged external contacts. (Allowlisted hosts are omitted; run with --all to see everything.)");
+    if (s.aggregates.length > 0) lines.push("Session-level observations follow — they are informational and never block.");
   } else {
     const header = ["VERDICT", "TARGET", "REASON (source)", "SEEN", "TOOLS"];
     const rows = shown.map((r) => ({
@@ -85,9 +86,12 @@ export function renderSummary(s: SessionSummary, opts: { color?: boolean; markdo
     );
   }
 
-  for (const agg of s.aggregates) {
+  if (s.aggregates.length > 0) {
     lines.push("");
-    lines.push(colorize(`⚠ ${agg}`, "1;33", useColor));
+    lines.push(colorize("Session-level observations (informational — aggregates never block):", "2", useColor));
+    for (const agg of s.aggregates) {
+      lines.push(colorize(`⚠ ${agg}`, "1;33", useColor));
+    }
   }
   if (hidden > 0) lines.push(`…and ${hidden} more rows (raise --max-rows)`);
   return lines.join("\n");
@@ -134,7 +138,7 @@ export function renderMarkdown(s: SessionSummary, all = false): string {  const 
   }
   if (s.aggregates.length > 0) {
     lines.push("");
-    lines.push("**Session-level patterns:**");
+    lines.push("**Session-level observations (informational — aggregates never block):**");
     for (const a of s.aggregates) lines.push(`- ⚠️ ${a}`);
   }
   return lines.join("\n");

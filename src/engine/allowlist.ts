@@ -58,6 +58,72 @@ export function isAllowlistedHost(host: string): boolean {
   return DEV_DOMAINS.has(registrableDomain(host));
 }
 
+/**
+ * Attacker-hostable allowlist suffixes (*.vercel.app, *.workers.dev, …): a
+ * user deploy there, so an attacker can too. Session-level aggregates treat
+ * these differently from fixed infrastructure — they stay eligible for
+ * pattern signals (persistence, rotation, shared endpoints), while hosts on
+ * fixed domains (npmjs.org, github.com, …) are always legitimate.
+ */
+const ATTACKER_HOSTABLE_SUFFIXES = new Set(["vercel.app", "netlify.app", "workers.dev", "pages.dev", "deno.dev"]);
+
+export type AllowlistKind = "fixed" | "attacker-hostable" | null;
+
+/** "fixed" = registry/infra on a domain the user cannot host on; "attacker-hostable" = PaaS suffix. */
+export function allowlistKind(host: string): AllowlistKind {
+  const rd = registrableDomain(host);
+  if (!DEV_DOMAINS.has(rd)) return null;
+  return ATTACKER_HOSTABLE_SUFFIXES.has(rd) ? "attacker-hostable" : "fixed";
+}
+
+const LOCAL_NAMES = new Set(["localhost", "host.docker.internal", "host.k3d.internal", "kubernetes.default.svc"]);
+
+/** Loopback / RFC1918 / link-local / local dev names — never C2-realistic. */
+export function isLocalHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  if (LOCAL_NAMES.has(h) || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".svc")) return true;
+  if (/^127\./.test(h) || h === "::1" || h === "[::1]") return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a === 10 || a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+/**
+ * User-supplied extra allowlist: EGRESS_EYE_EXTRA_ALLOWLIST is a comma-
+ * separated list of hosts or registrable domains that the user vouches for
+ * (an internal service, a self-hosted tool). Exact host or domain-suffix
+ * match; overrides pattern aggregates but never a feed hit.
+ */
+let extraCache: { raw: string; domains: Set<string> } | null = null;
+
+function extraList(): { domains: Set<string> } {
+  // Re-parse when the env value changes — keeps tests deterministic and
+  // costs nothing (hooks are fresh processes anyway).
+  const raw = process.env.EGRESS_EYE_EXTRA_ALLOWLIST ?? "";
+  if (!extraCache || extraCache.raw !== raw) {
+    const domains = new Set<string>();
+    for (const part of raw.split(",")) {
+      const entry = part.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+      if (!entry) continue;
+      domains.add(entry);
+    }
+    extraCache = { raw, domains };
+  }
+  return extraCache;
+}
+
+export function isUserAllowlisted(host: string): boolean {
+  const list = extraList();
+  const h = host.toLowerCase().replace(/\.$/, "");
+  const rd = registrableDomain(h);
+  return list.domains.has(rd) || list.domains.has(h);
+}
+
 export function allowlistSize(): number {
   return DEV_DOMAINS.size;
 }

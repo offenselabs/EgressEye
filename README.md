@@ -145,6 +145,10 @@ ever stored.
   files
 - **Sharded exfiltration** — many small sends to the same low-reputation
   host are aggregated into one finding that per-request tools miss
+- **Rotation across a host pool** — the same URL path contacted on many
+  distinct hosts in one session (beacon endpoints rotate hosts, not paths)
+- **Persistence across sessions** — a non-allowlisted host contacted in
+  several recent sessions (possible beaconing or recurring C2 callback)
 
 ## Limitations
 
@@ -163,7 +167,9 @@ malicious tool calls. This is not a security boundary.
 - Feed checks run in memory against a downloaded mirror — looked-up URLs do
   **not** leave the machine for feed checks.
 - URLs are stored **query-stripped** (no tracking parameters on disk).
-- Secrets are redacted at creation; tool inputs are never stored.
+- Secrets are redacted at creation; a machine-local salted hash groups
+  repeated contacts with the same secret (irreversible, never leaves the
+  machine); tool inputs are never stored.
 - By default, the only outbound traffic is the blocklist download itself and
   RDAP registrar lookups for a URL's registrable domain (disable with
   `EGRESS_EYE_RDAP=0`; disable everything with `EGRESS_EYE_OFFLINE=1`).
@@ -189,10 +195,11 @@ the `dist` zip attached to each release.
 
 ## Development
 
-- `npm test` — 70 unit tests (`node --test`, fully offline)
-- `npm run eval` — 39-scenario labeled corpus replayed through the real hook
-  path; the corpus in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant
-  to be adopted by other tools so results can be compared
+- `npm test` — 104 unit tests (`node --test`, fully offline)
+- `npm run eval` — 41-check labeled corpus (38 single-call scenarios plus 3
+  multi-session aggregation checks) replayed through the real hook path; the
+  corpus in [eval/scenarios.jsonl](eval/scenarios.jsonl) is meant to be
+  adopted by other tools so results can be compared
 - `npm run doctor` — end-to-end smoke test of a real spawned hook
 - See [CONTRIBUTING.md](CONTRIBUTING.md) — three hard rules: zero runtime
   dependencies, no LLM in the verdict path, honesty over coverage
@@ -204,4 +211,5 @@ Deep dives: [docs/threat-model.md](docs/threat-model.md) (attacker model) ·
 ## License
 
 [MIT](LICENSE). Feed data is subject to its providers' terms (OpenPhish
-community feed, abuse.ch URLhaus).
+community feed; abuse.ch URLhaus and Feodo Tracker — attribution required
+per the abuse.ch Terms of Use).
