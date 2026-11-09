@@ -25,6 +25,8 @@ export interface SessionEvent {
   verdict?: Verdict;
   source?: string;
   reason?: string;
+  /** Salted SHA-256 of a secret's value — groups repeats without exposure. */
+  fingerprint?: string;
   note?: string;
 }
 
@@ -189,7 +191,9 @@ export function summarizeSession(id: string): SessionSummary {
         });
       }
     } else if (e.kind === "secret") {
-      const key = `${e.value}`;
+      // Group by the salted fingerprint when present — the preview alone can
+      // collide across distinct secrets sharing a 4-char prefix and length.
+      const key = `${e.fingerprint ?? e.value}`;
       const existing = secretGroups.get(key);
       if (existing) {
         existing.count++;

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { processToolCall } from "../hooks/core.js";
-import { summarizeSession, rotateSession, listSessions, sessionFile } from "../store/session.js";
+import { summarizeSession, rotateSession, listSessions, sessionFile, appendEvents } from "../store/session.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BENIGN_SCAN = "curl https://example.com/status";
@@ -119,4 +119,15 @@ test("post-tool-use-failure events carry an attempted-call note", async () => {
   });
   const summary = summarizeSession("sess-e");
   assert.equal(summary.byVerdict.malicious, 1);
+});
+
+test("distinct secrets with colliding previews stay separate rows (fingerprint grouping)", () => {
+  const now = new Date().toISOString();
+  appendEvents([
+    { ts: now, session: "sess-fp", tool: "Bash", kind: "secret", value: "AKIA…(20)", source: "aws-access-key", reason: "AWS access key ID", fingerprint: "aaaaaaaaaaaaaaaa" },
+    { ts: now, session: "sess-fp", tool: "Bash", kind: "secret", value: "AKIA…(20)", source: "aws-access-key", reason: "AWS access key ID", fingerprint: "bbbbbbbbbbbbbbbb" },
+  ]);
+  const summary = summarizeSession("sess-fp");
+  const secretRows = summary.rows.filter((r) => r.kind === "secret");
+  assert.equal(secretRows.length, 2, "fingerprints keep distinct secrets distinct");
 });

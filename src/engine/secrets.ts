@@ -2,7 +2,18 @@
  * Secret scanning over tool-call text. Detects credentials the agent might be
  * carrying out of the machine (the exfiltration case). Findings are REDACTED
  * at creation: only a 4-character prefix and the length are ever stored.
+ *
+ * Each finding also carries a `fingerprint`: SHA-256 over a machine-local
+ * random salt plus the full value, truncated to 16 hex chars. It lets the
+ * report group repeated contacts with the same secret without storing (or
+ * being reversible to) the secret itself — the salt never leaves the machine.
  */
+
+import { createHash, randomBytes } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { dataDir, ensureDir } from "../lib/paths.js";
+import { writeFileAtomic } from "../lib/fsx.js";
 
 export interface SecretFinding {
   id: string;
@@ -11,6 +22,8 @@ export interface SecretFinding {
   /** Redacted preview: first 4 chars + "…" + length. Never the full secret. */
   preview: string;
   length: number;
+  /** SHA-256(machine-local salt + value), 16 hex chars — dedup without exposure. */
+  fingerprint: string;
 }
 
 interface Pattern {
@@ -42,7 +55,7 @@ const PLACEHOLDER_RE = /^(?:\$\{.*\}|<.*>|\*+|x+|X+|example|changeme|your[-_].*|
 const DB_CREDS_RE = /\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp):\/\/[^\s:@/]+:([^\s@/]+)@/gi;
 
 /** ≥4 UPPER_SNAKE= assignments anywhere in the text → looks like a .env file. */
-const ENV_LINE_RE = /(?:^|[\s"'{=(])([A-Z][A-Z0-9_]{2,}=)/gm;
+const ENV_LINE_RE = /(?:^|[\s"'{=(])([A-Z][A-Z0-9_]{2,}=)([^\s"',;)]*)/gm;
 
 export function shannonEntropy(s: string): number {
   if (s.length === 0) return 0;
@@ -61,12 +74,42 @@ function redact(value: string): string {
   return `${head}…(${value.length} chars)`;
 }
 
+let saltCache: string | null = null;
+
+/** Machine-local random salt (dataDir/salt), created on first use. */
+function machineSalt(): string {
+  if (saltCache) return saltCache;
+  const file = path.join(dataDir(), "salt");
+  try {
+    const stored = fs.readFileSync(file, "utf8").trim();
+    if (/^[0-9a-f]{32}$/.test(stored)) {
+      saltCache = stored;
+      return saltCache;
+    }
+  } catch {
+    // No salt yet — create one below.
+  }
+  saltCache = randomBytes(16).toString("hex");
+  try {
+    ensureDir(dataDir());
+    writeFileAtomic(file, saltCache);
+  } catch {
+    // Unwritable data dir: the in-memory salt still dedups this process.
+  }
+  return saltCache;
+}
+
+/** Irreversible per-secret identity: groups repeats without exposing the value. */
+function fingerprintOf(value: string): string {
+  return createHash("sha256").update(machineSalt() + value).digest("hex").slice(0, 16);
+}
+
 function collect(matches: Iterable<RegExpMatchArray>, id: string, severity: "medium" | "high", description: string, group = 0): SecretFinding[] {
   const out: SecretFinding[] = [];
   for (const m of matches) {
     const value = m[group];
     if (!value || value.length < 8) continue;
-    out.push({ id, severity, description, preview: redact(value), length: value.length });
+    out.push({ id, severity, description, preview: redact(value), length: value.length, fingerprint: fingerprintOf(value) });
   }
   return out;
 }
@@ -83,7 +126,7 @@ export function scanSecrets(text: string): SecretFinding[] {
   for (const m of text.matchAll(DB_CREDS_RE)) {
     const password = m[1];
     if (!password || PLACEHOLDER_RE.test(password)) continue;
-    out.push({ id: "db-connection-creds", severity: "medium", description: "Password embedded in a database connection string", preview: redact(password), length: password.length });
+    out.push({ id: "db-connection-creds", severity: "medium", description: "Password embedded in a database connection string", preview: redact(password), length: password.length, fingerprint: fingerprintOf(password) });
   }
 
   for (const m of text.matchAll(GENERIC_RE)) {
@@ -91,24 +134,36 @@ export function scanSecrets(text: string): SecretFinding[] {
     if (!value || PLACEHOLDER_RE.test(value)) continue;
     if (shannonEntropy(value) < 3.0) continue;
     if (/^https?:\/\//i.test(value)) continue;
-    out.push({ id: "generic-secret-assignment", severity: "medium", description: "High-entropy value assigned to a secret-like keyword", preview: redact(value), length: value.length });
+    out.push({ id: "generic-secret-assignment", severity: "medium", description: "High-entropy value assigned to a secret-like keyword", preview: redact(value), length: value.length, fingerprint: fingerprintOf(value) });
   }
 
-  const envKeys = new Set([...text.matchAll(ENV_LINE_RE)].map((m) => m[1]!));
-  if (envKeys.size >= 4) {
+  // A .env blob: 4+ UPPER_SNAKE= assignments AND at least two values that
+  // actually look secret-bearing (long, moderately high entropy, not a
+  // placeholder). Counting keys alone false-positives on benign code like
+  // `const MAX_RETRIES=3; TIMEOUT_MS=1000; …` — those values never pass the
+  // value gate.
+  const envAssignments = [...text.matchAll(ENV_LINE_RE)];
+  const envKeys = new Set(envAssignments.map((m) => m[1]!));
+  const secretishValues = envAssignments.filter((m) => {
+    const v = m[2] ?? "";
+    return v.length >= 8 && shannonEntropy(v) >= 2.5 && !PLACEHOLDER_RE.test(v);
+  });
+  if (envKeys.size >= 4 && secretishValues.length >= 2) {
     out.push({
       id: "env-blob",
       severity: "high",
-      description: `Text contains ${envKeys.size} UPPER_SNAKE= assignments — looks like a pasted .env file`,
+      description: `Text contains ${envKeys.size} UPPER_SNAKE= assignments (${secretishValues.length} with secret-like values) — looks like a pasted .env file`,
       preview: redact([...envKeys][0]!),
       length: envKeys.size,
+      fingerprint: fingerprintOf([...envKeys].sort().join("\n")),
     });
   }
 
-  // Deduplicate identical (id, preview) pairs.
+  // Deduplicate identical (id, fingerprint) pairs — the fingerprint is the
+  // value's identity; the preview alone can collide across distinct secrets.
   const seen = new Set<string>();
   return out.filter((f) => {
-    const key = `${f.id}:${f.preview}`;
+    const key = `${f.id}:${f.fingerprint}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

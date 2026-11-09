@@ -74,3 +74,28 @@ test("shannon entropy sanity", () => {
   assert.ok(shannonEntropy("aaaaaaaaaaaaaaaa") < 1);
   assert.ok(shannonEntropy("wJalrXUtnFEMI/K7MDENG/bPx") > 3.5);
 });
+
+test("env blob: 4+ UPPER_SNAKE constants with benign values do NOT fire (FP fix)", () => {
+  const findings = scanSecrets("const MAX_RETRIES=3;\nconst TIMEOUT_MS=1000;\nconst MAX_POOL=8;\nconst BUF_SIZE=256;");
+  assert.equal(findings.filter((f) => f.id === "env-blob").length, 0);
+});
+
+test("env blob: real .env content still fires with value evidence", () => {
+  const text = "DB_HOST=localhost\nDB_USER=admin\nDB_PASS=Sup3rS3cretValue!\nAWS_SECRET=wJalrXUtnFEMI/K7MDENG";
+  const f = scanSecrets(text);
+  const blob = f.find((x) => x.id === "env-blob");
+  assert.ok(blob, "a real .env blob still fires");
+  assert.match(blob!.description, /secret-like values/);
+});
+
+test("findings carry an irreversible fingerprint that distinguishes same-preview secrets", () => {
+  const a = scanSecrets("token AKIAIOSFODNN7EXAMPLE");
+  const b = scanSecrets("token AKIAIOSFODNN7EXAMPLF");
+  const fa = a.find((x) => x.id === "aws-access-key")!;
+  const fb = b.find((x) => x.id === "aws-access-key")!;
+  assert.equal(fa.preview, fb.preview, "same 4-char prefix and length");
+  assert.notEqual(fa.fingerprint, fb.fingerprint, "fingerprints distinguish them");
+  assert.match(fa.fingerprint, /^[0-9a-f]{16}$/);
+  const again = scanSecrets("token AKIAIOSFODNN7EXAMPLE");
+  assert.equal(again.find((x) => x.id === "aws-access-key")!.fingerprint, fa.fingerprint, "stable for the same value");
+});
