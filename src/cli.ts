@@ -168,7 +168,9 @@ async function cmdUpdateFeeds(): Promise<void> {
   const feed = MirrorFeed.open();
   process.stdout.write(`Refreshing ${feed.source.name} (${feed.source.url ?? "local file"}) …\n`);
   await feed.load(true);
-  const accum = feed.accumulate();
+  // load() already accumulated a successful download; only fold the local
+  // mirror here when that did not happen (e.g. the download failed offline).
+  const accum = feed.lastAccumStats ?? feed.accumulate();
   if (accum.saved) {
     process.stdout.write(
       `Accumulated history: ${feed.accumSize} entries (+${accum.added} added, ${accum.refreshed} refreshed, ${accum.pruned} pruned)\n`,

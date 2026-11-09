@@ -99,10 +99,11 @@ active and warns when the mirror is small.
 
 ### Accumulated history
 
-Each `update-feeds` run also folds the downloaded mirror into a local
-accumulating store, so a host that has left the keyless rolling window keeps
-a memory on disk. The verdict reflects the entry's age: a host the live feed
-still lists is `malicious`; one only the history knows is `suspicious`
+Each `update-feeds` run — and each hook-time mirror refresh — folds the
+downloaded mirror into a local accumulating store, so a host that has left
+the keyless rolling window keeps a memory on disk without manual runs. The
+verdict reflects the entry's age: a host the live feed still lists is
+`malicious`; one only the history knows is `suspicious`
 ("listed in <source> N days ago"), because stale feed data is not live
 evidence. Entries are pruned after 180 days; `EGRESS_EYE_ACCUMULATE=0`
 disables the store, and pinned feed files never consult it. The complete

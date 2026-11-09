@@ -6,10 +6,14 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { MirrorFeed } from "../engine/sources/feeds.js";
+import { AccumStore, accumFile } from "../engine/sources/accum.js";
 import { HookBudget } from "../lib/budget.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+// Isolated home: several tests here open unpinned feeds, which consults the
+// accumulated store — it must never be the user's real one.
+process.env.EGRESS_EYE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "egress-eye-feeds-home-"));
 process.env.EGRESS_EYE_OFFLINE = "1";
 delete process.env.EGRESS_EYE_GSB_KEY;
 
@@ -21,6 +25,7 @@ function tmpFile(name: string): string {
 }
 after(() => {
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(process.env.EGRESS_EYE_HOME!, { recursive: true, force: true });
 });
 
 /** Set env vars for the duration of fn, restoring them afterwards. */
@@ -101,6 +106,29 @@ test("expired wall-clock budget skips the feed refresh with an honest note", asy
     assert.equal(ok, false);
     assert.match(feed.note, /wall-clock budget exhausted/);
     assert.ok(!fs.existsSync(file));
+  });
+});
+
+test("offline stale refresh never touches the accumulated store", async () => {
+  await withEnv({ EGRESS_EYE_FEED_FILE: undefined, EGRESS_EYE_URLHAUS_FILE: undefined, EGRESS_EYE_FEED_SOURCE: undefined }, async () => {
+    const file = tmpFile("stale-offline.txt");
+    fs.writeFileSync(file, "https://listed.example/stale\n", "utf8");
+    fs.utimesSync(file, new Date(), new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)); // stale
+    // Pre-seed a store with one sentinel entry (fixed lastSeen).
+    const store = new AccumStore();
+    const fixedTs = 1_700_000_000_000;
+    store.merge(["https://sentinel.example/one"], "openphish", fixedTs);
+    store.save();
+    const before = fs.readFileSync(accumFile(), "utf8");
+
+    const feed = MirrorFeed.open({ file, source: "openphish" });
+    await feed.load(); // offline: staleness download is skipped
+
+    assert.equal(feed.size, 1, "stale mirror still loads and is checked");
+    assert.equal(fs.readFileSync(accumFile(), "utf8"), before, "no download → no accumulation; store byte-identical");
+    const reloaded = new AccumStore();
+    reloaded.load();
+    assert.equal(reloaded.get("https://sentinel.example/one")?.lastSeen, fixedTs, "sentinel lastSeen untouched");
   });
 });
 
