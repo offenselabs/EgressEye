@@ -145,6 +145,7 @@ export class MirrorFeed {
       needDownload = false;
     }
 
+    let downloaded = false;
     if (needDownload && !isOnlineDisabled() && this.source.url && !(this.source.keyEnv && !key)) {
       try {
         const res = await fetchWithTimeout(this.source.url, {
@@ -156,6 +157,7 @@ export class MirrorFeed {
           const body = await res.text();
           writeFileAtomic(this.file, body);
           this.ageMs = 0;
+          downloaded = true;
         } else {
           this.note = `feed refresh got HTTP ${res.status} — using local mirror as-is`;
         }
@@ -164,7 +166,15 @@ export class MirrorFeed {
       }
     }
 
-    return this.loadLocal();
+    const loaded = this.loadLocal();
+    // Self-maintaining accumulation: fold a freshly downloaded mirror into
+    // the local history, so the store grows without manual update-feeds runs
+    // (~once a day per machine, when the mirror goes stale in a hook). The
+    // wall-clock budget guards the write; pinned files never accumulate.
+    if (downloaded && !this.pinEnv && accumEnabled() && !deadline?.expired()) {
+      this.accumulate();
+    }
+    return loaded;
   }
 
   private loadLocal(): boolean {
